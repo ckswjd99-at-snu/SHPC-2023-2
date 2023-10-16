@@ -56,23 +56,17 @@ static void sgemm_reg(int M, int N, int K, float *A, float *B, float *C, int lda
     for (int mac_n = 0; mac_n < N; mac_n += MAC_N) {
       bzero(cbuf, sizeof(float) * MAC_M * MAC_N);
 
-      #if 1
-      // MACRO KERNEL - ASM
-      // Macro kernel with AVX512, manually handcrafted
+      #if __AVX512F__
+      // MACRO KERNEL - AVX512
+      // Macro kernel with AVX512
       for (int thr_k = 0; thr_k < K; thr_k++) {
         for (int m = 0; m < MAC_M; m++) {
-          for (int n = 0; n < MAC_N; n += 16) {
-            // Load 16 elements from A and broadcast to a vector
-            __m512 avec = _mm512_set1_ps(A[(mac_m + m) * K + thr_k]);
-            
-            // Load 16 elements from B
+          __m512 avec = _mm512_set1_ps(A[(mac_m + m) * K + thr_k]);
+
+          for (int n = 0; n < MAC_N; n += MIC_N) {
             __m512 bvec = _mm512_loadu_ps(&B[thr_k * ldb + (mac_n + n)]);
-            
-            // Multiply A and B and add to the cbuf
             __m512 cvec = _mm512_loadu_ps(&cbuf[m * MAC_N + n]);
             cvec = _mm512_fmadd_ps(avec, bvec, cvec);
-            
-            // Store the result back to cbuf
             _mm512_storeu_ps(&cbuf[m * MAC_N + n], cvec);
           }
         }
@@ -80,7 +74,7 @@ static void sgemm_reg(int M, int N, int K, float *A, float *B, float *C, int lda
 
       #else
       // MACRO KERNEL - NAIVE
-      // Implemented code is naive, but compiler will automatically parallelize here with AVX codes.
+      // Implemented code is naive, but compiler will automatically optimize here with AVX codes.
       for (int thr_k = 0; thr_k < K; thr_k++) { 
         for (int m = 0; m < MAC_M; m++) {
           for (int n = 0; n < MAC_N; n++) {
