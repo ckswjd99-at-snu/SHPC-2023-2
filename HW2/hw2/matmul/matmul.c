@@ -11,8 +11,8 @@
 #define MAX_THREADS 256
 
 /* HYPERPARAMS */
-static const int MAC_M = 32;
-static const int MAC_N = 32;
+static const int MAC_M = 64;
+static const int MAC_N = 64;
 static const int MAC_K = 4096;
 
 static const int MIC_M = 16;
@@ -44,30 +44,30 @@ void matmul_singlethread(float *A, float *B, float *C, size_t M, size_t N, size_
 }
 
 
-static void *sgemm_reg(int thr_M, int thr_N, int thr_K, float *thr_A, float *thr_B, float *thr_C, int lda, int ldb, int ldc) {
+static void sgemm_reg(int M, int N, int K, float *A, float *B, float *C, int lda, int ldb, int ldc) {
   float cbuf[MAC_M * MAC_N];
 
   int mac_M = MAC_M;
   int mac_N = MAC_N;
 
   // Regular M
-  for (int thr_m = 0; thr_m < (thr_M - MAC_M + 1); thr_m += MAC_M) {
+  for (int mac_m = 0; mac_m < M; mac_m += MAC_M) {
     // Regular N
-    for (int thr_n = 0; thr_n < (thr_N - MAC_N + 1); thr_n += MAC_N) {
+    for (int mac_n = 0; mac_n < N; mac_n += MAC_N) {
       bzero(cbuf, sizeof(float) * MAC_M * MAC_N);
 
-      /* MICRO KERNEL - NAIVE */
-      for (int thr_k = 0; thr_k < thr_K; thr_k++) { 
-        
+      // MACRO KERNEL - NAIVE
+      // Implemented code is naive, but compiler will automatically parallelize here with AVX codes.
+      for (int thr_k = 0; thr_k < K; thr_k++) { 
         for (int m = 0; m < MAC_M; m++) {
           for (int n = 0; n < MAC_N; n++) {
-            cbuf[m * MAC_N + n] += thr_A[(thr_m + m) * thr_K + thr_k] * thr_B[thr_k * ldb + (thr_n + n)];
+            cbuf[m * MAC_N + n] += A[(mac_m + m) * K + thr_k] * B[thr_k * ldb + (mac_n + n)];
           }
         }
       }
 
       for (int m = 0; m < MAC_M; m++) {
-        memcpy(&thr_C[(thr_m + m) * ldc + (thr_n)], &cbuf[m * MAC_N], sizeof(float) * MAC_N);
+        memcpy(&C[(mac_m + m) * ldc + (mac_n)], &cbuf[m * MAC_N], sizeof(float) * MAC_N);
       }
 
     }
@@ -75,8 +75,8 @@ static void *sgemm_reg(int thr_M, int thr_N, int thr_K, float *thr_A, float *thr
   
 }
 
-static void *sgemm(int thr_M, int thr_N, int thr_K, float *thr_A, float *thr_B, float *thr_C, int lda, int ldb, int ldc) {
-  // printf("%d %d %d\n", thr_M, thr_N, thr_K);
+static void sgemm(int M, int N, int K, float *A, float *B, float *C, int lda, int ldb, int ldc) {
+  // printf("%d %d %d\n", M, N, K);
   // fflush(stdout);
 
   float cbuf[MAC_M * MAC_N];
@@ -84,52 +84,52 @@ static void *sgemm(int thr_M, int thr_N, int thr_K, float *thr_A, float *thr_B, 
   int mac_M = MAC_M;
   int mac_N = MAC_N;
 
-  if (thr_N % MAC_N == 0 && thr_M % MAC_M == 0) {
-    sgemm_reg(thr_M, thr_N, thr_K, thr_A, thr_B, thr_C, lda, ldb, ldc);
+  if (N % MAC_N == 0 && M % MAC_M == 0) {
+    sgemm_reg(M, N, K, A, B, C, lda, ldb, ldc);
     return;
   }
 
   // Regular M
-  for (int thr_m = 0; thr_m < (thr_M - MAC_M + 1); thr_m += MAC_M) {
+  for (int thr_m = 0; thr_m < (M - MAC_M + 1); thr_m += MAC_M) {
     // Regular N
-    for (int thr_n = 0; thr_n < (thr_N - MAC_N + 1); thr_n += MAC_N) {
+    for (int thr_n = 0; thr_n < (N - MAC_N + 1); thr_n += MAC_N) {
       bzero(cbuf, sizeof(float) * MAC_M * MAC_N);
 
-      /* MICRO KERNEL - NAIVE */
-      for (int thr_k = 0; thr_k < thr_K; thr_k++) { 
+      /* MACRO KERNEL - NAIVE */
+      for (int thr_k = 0; thr_k < K; thr_k++) { 
         
         for (int m = 0; m < MAC_M; m++) {
           for (int n = 0; n < MAC_N; n++) {
-            cbuf[m * MAC_N + n] += thr_A[(thr_m + m) * thr_K + thr_k] * thr_B[thr_k * ldb + (thr_n + n)];
+            cbuf[m * MAC_N + n] += A[(thr_m + m) * K + thr_k] * B[thr_k * ldb + (thr_n + n)];
           }
         }
       }
 
       for (int m = 0; m < MAC_M; m++) {
         for (int n = 0; n < MAC_N; n++) {
-          thr_C[(thr_m + m) * ldc + (thr_n + n)] = cbuf[m * MAC_N + n];
+          C[(thr_m + m) * ldc + (thr_n + n)] = cbuf[m * MAC_N + n];
         }
       }
     }
 
     // Remaining N
-    if (thr_N % MAC_N != 0) {
-      int thr_n = (thr_N / MAC_N) * MAC_N;
+    if (N % MAC_N != 0) {
+      int thr_n = (N / MAC_N) * MAC_N;
       bzero(cbuf, sizeof(float) * MAC_M * MAC_N);
 
-      /* MICRO KERNEL - NAIVE */
-      for (int thr_k = 0; thr_k < thr_K; thr_k++) {
+      /* MACRO KERNEL - NAIVE */
+      for (int thr_k = 0; thr_k < K; thr_k++) {
 
         for (int m = 0; m < MAC_M; m++) {
-          for (int n = 0; n < thr_N - thr_n; n++) {
-            cbuf[m * MAC_N + n] += thr_A[(thr_m + m) * thr_K + thr_k] * thr_B[thr_k * ldb + (thr_n + n)];
+          for (int n = 0; n < N - thr_n; n++) {
+            cbuf[m * MAC_N + n] += A[(thr_m + m) * K + thr_k] * B[thr_k * ldb + (thr_n + n)];
           }
         }
       }
 
       for (int m = 0; m < MAC_M; m++) {
-        for (int n = 0; n < thr_N - thr_n; n++) {
-          thr_C[(thr_m + m) * ldc + (thr_n + n)] = cbuf[m * MAC_N + n];
+        for (int n = 0; n < N - thr_n; n++) {
+          C[(thr_m + m) * ldc + (thr_n + n)] = cbuf[m * MAC_N + n];
         }
       }
     }
@@ -137,46 +137,46 @@ static void *sgemm(int thr_M, int thr_N, int thr_K, float *thr_A, float *thr_B, 
   }
   
   // Remaining M
-  if (thr_M % MAC_M != 0) {
-    int thr_m = (thr_M / MAC_M) * MAC_M;
+  if (M % MAC_M != 0) {
+    int thr_m = (M / MAC_M) * MAC_M;
     // Regular N
-    for (int thr_n = 0; thr_n < (thr_N - MAC_N + 1); thr_n += MAC_N) {
+    for (int thr_n = 0; thr_n < (N - MAC_N + 1); thr_n += MAC_N) {
       bzero(cbuf, sizeof(float) * MAC_M * MAC_N);
 
       /* MICRO KERNEL - NAIVE */
-      for (int thr_k = 0; thr_k < thr_K; thr_k++) { 
+      for (int thr_k = 0; thr_k < K; thr_k++) { 
         for (int m = 0; m < MAC_M; m++) {
           for (int n = 0; n < MAC_N; n++) {
-            cbuf[m * MAC_N + n] += thr_A[(thr_m + m) * thr_K + thr_k] * thr_B[thr_k * ldb + (thr_n + n)];
+            cbuf[m * MAC_N + n] += A[(thr_m + m) * K + thr_k] * B[thr_k * ldb + (thr_n + n)];
           }
         }
       }
 
       for (int m = 0; m < MAC_M; m++) {
         for (int n = 0; n < MAC_N; n++) {
-          thr_C[(thr_m + m) * ldc + (thr_n + n)] = cbuf[m * MAC_N + n];
+          C[(thr_m + m) * ldc + (thr_n + n)] = cbuf[m * MAC_N + n];
         }
       }
     }
 
     // Remaining N
 
-    if (thr_N % MAC_N != 0) {
-      int thr_n = (thr_N / MAC_N) * MAC_N;
+    if (N % MAC_N != 0) {
+      int thr_n = (N / MAC_N) * MAC_N;
       bzero(cbuf, sizeof(float) * MAC_M * MAC_N);
 
       /* MICRO KERNEL - NAIVE */
-      for (int thr_k = 0; thr_k < thr_K; thr_k++) {
+      for (int thr_k = 0; thr_k < K; thr_k++) {
         for (int m = 0; m < MAC_M; m++) {
-          for (int n = 0; n < thr_N - thr_n; n++) {
-            cbuf[m * MAC_N + n] += thr_A[(thr_m + m) * thr_K + thr_k] * thr_B[thr_k * ldb + (thr_n + n)];
+          for (int n = 0; n < N - thr_n; n++) {
+            cbuf[m * MAC_N + n] += A[(thr_m + m) * K + thr_k] * B[thr_k * ldb + (thr_n + n)];
           }
         }
       }
 
       for (int m = 0; m < MAC_M; m++) {
-        for (int n = 0; n < thr_N - thr_n; n++) {
-          thr_C[(thr_m + m) * ldc + (thr_n + n)] = cbuf[m * MAC_N + n];
+        for (int n = 0; n < N - thr_n; n++) {
+          C[(thr_m + m) * ldc + (thr_n + n)] = cbuf[m * MAC_N + n];
         }
       }
     }
