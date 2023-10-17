@@ -1,39 +1,61 @@
 \section{Matrix Multiplication using Pthread}
 
+\begin{figure}[t]
+    \centering
+    \begin{subfigure}[b]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{imgs/gflops_exp.png}
+        \caption{Thread를 2배씩 늘린 경우.}\label{fig:gflops_exp}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.49\textwidth}
+        \centering
+        \includegraphics[width=\textwidth]{imgs/gflops_lin.png}
+        \caption{Thread를 16개씩 늘린 경우.}\label{fig:gflops_lin}
+    \end{subfigure}
+    \caption{Thread 수에 따른 성능 변화.}\label{fig:gflops}
+\end{figure}
+
 \begin{itemize}
 
     \item {
         \textbf{병렬화 방식.}
         주어진 행렬은 row-wise 방식으로 메모리를 사용한다 (바로 다음 메모리가 같은 row의 다음 element).
         이를 고려할 때 행렬 B를 쪼개는 것이 행렬 A에 대한 캐시 활용도를 높일 수 있을 것이라고 판단하였다.
-        이에 각 thread가 A를 모두 사용하고 B의 일부 column을 사용하여 C의 일부 column을 계산하도록
-        코드를 작성하였다.
+        이에 각 thread가 행렬 A를 모두 사용하고 행렬 B의 일부 column을 사용하여 행렬 C의 일부 column을
+        계산하도록 코드를 작성하였다.
         계산 중간에 thread 사이의 synchronization은 일어나지 않으며, 각 thread의 계산이 끝나는
-        시점이 균일하도록 각 thread에게 C의 column을 균등히 할당하였다.
-        또한, 한 번에 행렬 C의 $32 \times 32$ 만큼을 계산하도록 하는 macro kernel을 정의하여
-        연산 과정이 cache-friendly 하도록 하였다.
+        시점이 균일하도록 각 thread에게 행렬 C의 column을 균등히 할당하였다.
+        또한, 한 번에 행렬 C의 $64 \times 64$ 만큼을 계산하도록 하는 macro kernel을 정의하여
+        연산 과정이 cache-friendly 하도록 하였다. Macro kernel 내부에서는 AVX512 코드를 사용하여
+        연산을 가속하였다.
     }
     \item {
         \textbf{Thread 수에 따른 성능 변화.}
-        Thread를 2배씩 증가시키며 실험한 결과[Fig.~{}], GFLOPS는 증가하다가 다시 감소하는 모습을 보였다.
-        처음에 증가하는 이유는, physical core의 수보다 thread의 수가 적기 때문에 thread가 증가함에 따라
+        Thread를 2배씩 증가시키며 실험한 결과[Fig.~{\ref{fig:gflops_exp}}],
+        GFLOPS는 증가하다가 다시 감소하는 모습을 보였다.
+        처음에 증가하는 이유는 아직 physical core의 수보다 thread의 수가 적기 때문에 thread가 증가함에 따라
         새로운 physical core가 연산에 참여할 수 있게 되기 때문이다.
         64개 thread를 넘어서면 다시 감소하는 모습을 보이는데, 이때부터는 logical core의 수보다
-        thread의 수가 많아지면서 여러 thread가 core를 두고 경쟁하게 되기 때문이며,
-        thread의 수가 더 증가하면서 경쟁에서 발생하는 overhead가 증가하여 성능이 감소하게 된다.
+        thread의 수가 많아지면서 여러 thread가 한 core를 두고 경쟁하게 되기 때문이며,
+        그 과정에서 overhead가 발생하여 성능이 감소하게 된다.
 
-        최고 성능을 보인 thread 수의 근처에서 추가로 실험해본 결과[Fig.~{}], 훨씬 일관되지 않은 모습을 보였다.
-        그 이유로는 thread의 수가 logical core의 수의 배수가 아닌 경우 경쟁이 더욱 복잡하게 일어난다는 점과
-        thread의 수에 비례하여 더 치열해지는 경쟁을 들 수 있다.
+        추가로, 최고 성능을 보인 thread 수의 근처에서 thread의 수를 16씩 증가시키며 실험해본 결과
+        [Fig.~{\ref{fig:gflops_lin}}], 훨씬 일관되지 않은 모습을 보였다.
+        이는 thread의 수가 logical core의 수의 약수 또는 배수가 아닌 경우 경쟁이 매우 복잡하게 일어난다는 점과,
+        thread의 수에 비례하여 경쟁 자체가 더 치열해지는 두 가지 요인이 동시에 작용한 결과이다.
     }
     \item {
         \textbf{최적의 Thread 수.}
-        위 실험에서 확인한 바, 64개의 thread를 사용할 때 최고 성능을 보였다.
-        이는 CPU의 logical core의 수와 같다. 그 이유로 강력히 추측되는 것은,
-        연산 코드가 충분히 최적화되지 않아 하드웨어를 최대로 사용하지 못하고 있기 때문에,
-        두 개 thread에서 수행하는 연산들이 interleave될 여지가 매우 많았기 때문으로 보인다.
-        연산 코드가 최적화됨에 따라 하드웨어를 최대로 사용하게 되면서,
-        최고 성능을 보이는 thread의 수는 점차 physical core의 수인 32개로 다가갈 것으로 예상한다.
+        위 실험에서 확인한 바, 64개의 thread를 사용할 때 최고 성능을 보였으며 이 때의 성능은 528.487368 GFLOPS이다.
+        이는 이론적으로 계산한 peak performance의 32.2\%에 해당하는 수치이다.
+        최고 성능을 보인 thread의 수는 CPU의 logical core의 수와 같다. 그 이유로 추측되는 것은,
+        matrix multiplication을 위해서는 실제 연산을 수행하는 명령어 뿐 아니라
+        메모리에 접근하는 명령어와 같은 여러 가지 명령어들 또한 자주 수행되기 때문이다.
+        따라서 두 개의 thread에서 수행되는 연산들이 interleave될 여지가 많았을 것으로 보이며,
+        그에 따라 logical core의 수인 64개의 thread를 사용한 경우에 가장 좋은 성능을 보인 것으로 보인다.
+        만약 실제 연산을 수행하는 명령어 이외의 명령어들의 비율이 매우 적어진다면, 
+        physical core의 수인 32개의 thread를 사용하는 것이 가장 좋은 성능을 보이게 될 것이다.
 
         \textbf{개선 방법.}
         더 높은 성능을 위해 적용할 수 있는 방법은 다음과 같은 것들이 있다.
@@ -42,11 +64,6 @@
                 연산을 수행하는 최하단 커널에 loop-unroll을 적용한다. 이를 통해 루프를 수행하기 위해
                 기본적으로 존재하는 overhead를 효과적으로 줄일 수 있으며, 컴파일러에게 더 많은
                 최적화 기회를 제공할 수 있다.
-            }
-            \item {
-                AVX512 명령어를 사용한다. 위 문제에서 답하였듯이, AVX512 명령어를 사용하면 하나의
-                명령어로 16개의 FP32 연산을 한 번에 수행할 수 있으므로 성능을 매우 높일 수 있다.
-                이는 직전에 언급한 loop-unroll 방법의 상위호환이라고 할 수 있다.
             }
             \item {
                 Macro kernel과 micro kernel을 분리한다. 보통의 GEMM 라이브러리에서는 cache의 사용과

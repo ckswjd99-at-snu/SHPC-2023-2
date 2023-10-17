@@ -96,9 +96,6 @@ static void sgemm(int M, int N, int K, float *A, float *B, float *C, int lda, in
 
   float cbuf[MAC_M * MAC_N];
 
-  int mac_M = MAC_M;
-  int mac_N = MAC_N;
-
   if (N % MAC_N == 0 && M % MAC_M == 0) {
     sgemm_reg(M, N, K, A, B, C, lda, ldb, ldc);
     return;

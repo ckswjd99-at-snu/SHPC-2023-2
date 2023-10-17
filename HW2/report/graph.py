@@ -5,30 +5,38 @@ import matplotlib.pyplot as plt
 # Iterated 10 times. 
 # Format: [thread, GFLOPS]
 data1 = np.array([
-    [   1,   12.109473],
-    [   2,   24.986466],
-    [   4,   44.867514],
-    [   8,   80.882804],
-    [  16,  159.467801],
-    [  32,  230.937032],
-    [  64,  319.222889],
-    [ 128,  186.833631],
-    [ 256,   93.317154],
+    [   1,   29.587183],
+    [   2,   67.573975],
+    [   4,  126.452963],
+    [   8,  250.105695],
+    [  16,  402.960087],
+    [  32,  541.627833],
+    [  64,  585.510650],
+    [ 128,  329.937241],
+    [ 256,  236.764712],
 ]).transpose(1, 0)
 
 data2 = np.array([
-    [  16,  159.467801],
-    [  32,  230.937032],
-    [  48,  163.719001],
-    [  64,  319.222889],
-    [  80,  168.679404],
-    [  96,  103.772299],
-    [  112, 133.486816],
-    [  128, 186.833631],
+    [  16,  402.960087],
+    [  32,  541.627833],
+    [  48,  220.415782],
+    [  64,  585.510650],
+    [  80,  238.057714],
+    [  96,  108.586687],
+    [  112, 167.649999],
+    [  128, 329.937241],
 ]).transpose(1, 0)
 
-plt.plot(*data1)
+plt.grid(True, axis='y', alpha=0.3)
+plt.bar(np.arange(len(data1[1, :])), data1[1, :], width=0.5)
+plt.xticks(np.arange(len(data1[1, :])), labels=data1[0, :].astype(np.int32))
+plt.xlabel('# of threads')
+plt.ylabel('GFLOPS')
 plt.show()
 
-plt.plot(*data2)
+plt.grid(True, axis='y', alpha=0.3)
+plt.bar(np.arange(len(data2[1, :])), data2[1, :], width=0.5)
+plt.xticks(np.arange(len(data2[1, :])), labels=data2[0, :].astype(np.int32))
+plt.xlabel('# of threads')
+plt.ylabel('GFLOPS')
 plt.show()
