@@ -23,18 +23,17 @@ Fig.~{\ref{fig:lscpu}}과 같이 계산 노드의 CPU 정보를 얻었다.
         공급되는 전력이 충분하며, CPU의 온도가 너무 높지 않아야 한다.
     }
     \item {
-        하나의 CPU에서 physical core는 16개, logical core는 32개이다.
-        Theoretical peak performance 계산을 위해서는 physical core 개수인 16를 사용해야 하며,
+        노드에 장착된 두 개의 CPU 중 하나만 고려하면, physical core는 16개, logical core는 32개이다.
+        즉 계산 노드의 전체 physical core 개수는 32개, logical core 개수는 64개이다.
+        Theoretical peak performance 계산을 위해서는 physical core 개수를 사용해야 하며,
         그 이유는 logical core는 하나의 physical core가 동시에 여러 thread를 연산할 수 있도록 하는
-        기술(i.e. Hyper-Threading, SMT 등)을 적용하여 얻어진 가상의 개념이므로,
+        기술 (i.e. Hyper-Threading, SMT 등)을 적용하여 얻어진 가상의 개념이므로,
         실제 연산의 성능은 결국 physical core에 달려 있기 때문이다.
-        
     }
     \item {
-        Intel(R) Xeon(R) Silver 4216 CPU 는 1개의 AVX512 FMA 유닛을 갖고 있다.
-        이를 바탕으로 한 clock cycle당 실행되는 AVX512 instruction의 수는 1개라고 가정하자.
-        AVX512 instruction 하나가 수행할 수 있는 FP32 연산의 수는 $512/32=16$개이다.
-        따라서 하나의 core가 한 clock cycle에 수행할 수 있는 FP32 연산의 수는 16개이다.
+        Intel(R) Xeon(R) Silver 4216 CPU 는 1개의 AVX512 FMA 유닛을 갖고 있다\cite{NumAVX512Units}.
+        또한 1개의 AVX512 FMA 유닛은 한 clock에 $16\times 2=32$개의 FP32 연산을 수행할 수 있다\cite{FLOPSperUnit, CascadeLakeFLOPS}.
+        따라서 하나의 core가 한 clock cycle에 수행할 수 있는 FP32 연산의 수는 32개이다.
     }
     \item {
         Theoretical peak performance를 다음과 같이 계산할 수 있다.
@@ -43,9 +42,9 @@ Fig.~{\ref{fig:lscpu}}과 같이 계산 노드의 CPU 정보를 얻었다.
             R_{peak}
             & =     \mathrm{\frac{(\#~of~FP32~operation)}{(\#~of~core)(\#~of~clock)}}
             \times  \mathrm{(\#~of~core)}
-            \times  \mathrm{(boost~clock~frequency)} \notag \\
-            & = 16 \times 3.2 \times 32 \notag \\
-            & = {1638.4}~\mathrm{(GFLOPS)} \notag
+            \times  \mathrm{(base~clock~frequency)} \notag \\
+            & = 32 \times 32 \times 2.1 \notag \\
+            & = {2150.4}~\mathrm{(GFLOPS)} \notag
         \end{align}
     
     }
