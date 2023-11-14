@@ -22,7 +22,38 @@ static cl_kernel kernel;
 static cl_mem a_d, b_d, c_d;
 
 void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
-  // TODO: FILL_IN_HERE
+  // WRITE DATA TO GPU
+  err = clEnqueueWriteBuffer(queue, a_d, CL_TRUE, 0, M * K * sizeof(float), A, 0, NULL, NULL);
+  CHECK_ERROR(err);
+  err = clEnqueueWriteBuffer(queue, b_d, CL_TRUE, 0, K * N * sizeof(float), B, 0, NULL, NULL);
+  CHECK_ERROR(err);
+
+  // SET ARGUMENTS TO KERNEL
+  err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &a_d);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel, 1, sizeof(cl_mem), &b_d);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel, 2, sizeof(cl_mem), &c_d);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel, 3, sizeof(int), &M);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel, 4, sizeof(int), &N);
+  CHECK_ERROR(err);
+  err = clSetKernelArg(kernel, 5, sizeof(int), &K);
+  CHECK_ERROR(err);
+
+  // RUN KERNEL (BLOCKING)
+  const int TS = 32;
+  const size_t local[2] = { TS, TS };
+  const size_t global[2] = { M, N };
+  err = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global, local, 0, NULL, NULL);
+  CHECK_ERROR(err);
+  err = clFinish(queue);
+  CHECK_ERROR(err);
+
+  // READ DATA FROM GPU
+  err = clEnqueueReadBuffer(queue, c_d, CL_TRUE, 0, M * N * sizeof(float), C, 0, NULL, NULL);
+  CHECK_ERROR(err);
 }
 
 static void print_platform_info(cl_platform_id platform) {
@@ -122,4 +153,12 @@ void matmul_initialize(int M, int N, int K) {
   CHECK_ERROR(err);
 }
 
-void matmul_finalize() {}
+void matmul_finalize() {
+  clReleaseMemObject(a_d);
+  clReleaseMemObject(b_d);
+  clReleaseMemObject(c_d);
+  clReleaseKernel(kernel);
+  clReleaseProgram(program);
+  clReleaseCommandQueue(queue);
+  clReleaseContext(context);
+}
