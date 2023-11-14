@@ -43,7 +43,7 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
   CHECK_ERROR(err);
 
   // RUN KERNEL (BLOCKING)
-  const int TS = 32;
+  const int TS = 8;
   const size_t local[2] = { TS, TS };
   const size_t global[2] = { M, N };
   err = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global, local, 0, NULL, NULL);
