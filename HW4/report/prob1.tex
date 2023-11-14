@@ -3,7 +3,13 @@
 \begin{itemize}
 
     \item {
-        
+        \textbf{병렬화 방식.}
+        우선 \texttt{MPI\_Scatter}를 사용하여 \texttt{xs}와 \texttt{ys}를 각 프로세스에 분배한다.
+        이 때 추가적인 메모리 할당을 피하기 위하여 기존의 \texttt{xs}와 \texttt{ys} 영역에 in-place로 분배하였다.
+        이후 각자 프로세스에 할당된 \texttt{xs}와 \texttt{ys} 데이터 중 원점으로부터 거리 1 이내인 점의 수를 세어
+        \texttt{local\_count} 변수에 저장한 뒤, \texttt{MPI\_Reduce}를 사용하여
+        각 프로세스의 \texttt{local\_count}를 모두 더하여 \texttt{count} 변수에 저장하도록 구현하였다.
+
     }
 
 \end{itemize}

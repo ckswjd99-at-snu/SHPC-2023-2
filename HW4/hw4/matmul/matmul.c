@@ -218,7 +218,7 @@ void matmul(float *A, float *B, float *C, int M, int N, int K,
     int threads_per_process, int mpi_rank, int mpi_world_size) {
   // TODO: FILL_IN_HERE
 
-  /* SPLIT TO PROCESSES THROUGH M */
+  /* SHARE OPERANDS */
   if (mpi_rank == 0) {
     MPI_Scatter(A, M * K / mpi_world_size, MPI_FLOAT, MPI_IN_PLACE, M * K / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
   }
