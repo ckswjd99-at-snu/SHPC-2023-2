@@ -3,39 +3,42 @@ __kernel void sgemm(__global float4 *A, __global float4 *B, __global float4 *C, 
   const int TSM = 128;   // Local work size (M)
   const int TSN = 128;   // Local work size (N)
   const int TSK = 32;   // Local work size (K)
-  const int WPT = 8;    // Work per thread (1 x 4VEC = 1 x 16floats)
+  const int WPTM = 1;    // Work per thread (M)
+  const int WPTN = 8;    // Work per thread (N)
   const int VEC = 4;    // Vector size (4 floats)
   
   // IDENTIFY THREAD
-  const int local_row = get_local_id(0);    // Local row ID (max: TSM)
-  const int local_col = get_local_id(1);    // Local col ID (max: TSN/WPT/VEC)
+  const int local_row = get_local_id(0);    // Local row ID (max: TSM/WPTM)
+  const int local_col = get_local_id(1);    // Local col ID (max: TSN/WPTN/VEC)
   const int group_row = get_group_id(0);    // Work-group ID (0..M/TSM)
   const int group_col = get_group_id(1);    // Work-group ID (0..N/TSN)
-  const int global_row = TSM * group_row + local_row;        // Row LOC of C (0..M)
-  const int global_col = TSN/VEC * group_col + local_col * WPT;  // Col LOC of C (0..N/VEC)
+  const int global_row = TSM * group_row + local_row * WPTM;        // Row LOC of C (0..M)
+  const int global_col = TSN/VEC * group_col + local_col * WPTN;  // Col LOC of C (0..N/VEC)
 
   // LOCAL MEMS
   __local float4 local_A[TSM][TSK/VEC];   // Local memory to fit a tile of TSM*TSK elements of A
   __local float4 local_B[TSK][TSN/VEC];   // Local memory to fit a tile of TSK*TSN elements of B
 
   // ACCUMULATORS
-  float4 acc[WPT];
-  for (int w=0; w<WPT; w++) {
-      acc[w] = (0.0f, 0.0f, 0.0f, 0.0f);
-  }
+  float4 acc[WPTM][WPTN];
+  for (int wm=0; wm<WPTM; wm++)
+    for (int wn=0; wn<WPTN; wn++)
+      acc[wm][wn] = (0.0f, 0.0f, 0.0f, 0.0f);
 
   // LOOP OVER ALL TILES
   for (int tile=0; tile<K/TSK; tile++) {
     
     // Compressed load: A
-    for (int w=0; w<WPT * TSK / TSN; w++) 
-      local_A[local_row][(WPT * TSK / TSN) * local_col + w]
-        = A[K/VEC * global_row + TSK/VEC * tile + (WPT * TSK / TSN) * local_col + w];
+    for (int wm=0; wm<WPTM; wm++)
+      for (int wn=0; wn<WPTN * TSK / TSN; wn++) 
+        local_A[WPTM * local_row + wm][(WPTN * TSK / TSN) * local_col + wn]
+          = A[K/VEC * (global_row + wm) + TSK/VEC * tile + (WPTN * TSK / TSN) * local_col + wn];
 
     // Compressed load: B
-    for (int w=0; w<WPT; w++) 
-      local_B[local_row * TSK / TSM][local_col * WPT + w]
-        = B[N/VEC * (TSK * tile + local_row * TSK / TSM) + global_col + w];
+    for (int wm=0; wm<WPTM; wm++)
+      for (int wn=0; wn<WPTN; wn++) 
+        local_B[(WPTM * local_row + wm) * TSK / TSM][local_col * WPTN + wn]
+          = B[N/VEC * (TSK * tile + (WPTM * local_row + wm) * TSK / TSM) + global_col + wn];
 
     // Barrier for local memory
     barrier(CLK_LOCAL_MEM_FENCE);
@@ -43,15 +46,17 @@ __kernel void sgemm(__global float4 *A, __global float4 *B, __global float4 *C, 
     // Multiplicate and accumulate
     for (int k=0; k<TSK; k++) {
       float val_A;
-      switch(k % VEC) {
-        case 0: val_A = local_A[local_row][k/VEC].x; break;
-        case 1: val_A = local_A[local_row][k/VEC].y; break;
-        case 2: val_A = local_A[local_row][k/VEC].z; break;
-        case 3: val_A = local_A[local_row][k/VEC].w; break;
-      }
-       
-      for (int w=0; w<WPT; w++) {
-        acc[w] += val_A * local_B[k][local_col * WPT + w];
+      for (int wm=0; wm<WPTM; wm++) {
+        
+        switch(k % VEC) {
+          case 0: val_A = local_A[(WPTM * local_row + wm)][k/VEC].x; break;
+          case 1: val_A = local_A[(WPTM * local_row + wm)][k/VEC].y; break;
+          case 2: val_A = local_A[(WPTM * local_row + wm)][k/VEC].z; break;
+          case 3: val_A = local_A[(WPTM * local_row + wm)][k/VEC].w; break;
+        }
+      
+        for (int wn=0; wn<WPTN; wn++) 
+          acc[wm][wn] += val_A * local_B[k][local_col * WPTN + wn];
       }
     }
 
@@ -60,7 +65,8 @@ __kernel void sgemm(__global float4 *A, __global float4 *B, __global float4 *C, 
   }
 
   // WRITE RESULT
-  for (int w=0; w<WPT; w++) {
-    C[N/VEC * global_row + global_col + w] = acc[w];
-  }
+  for (int wm=0; wm<WPTM; wm++)
+    for (int wn=0; wn<WPTN; wn++)
+      C[N/VEC * (global_row + wm) + global_col + wn] = acc[wm][wn];
+  
 }
