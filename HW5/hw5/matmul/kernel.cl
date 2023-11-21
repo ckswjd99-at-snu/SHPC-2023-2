@@ -16,8 +16,8 @@ __kernel void sgemm(__global float4 *A, __global float4 *B, __global float4 *C, 
   const int global_col = TSN/VEC * group_col + local_col * WPTN;  // Col LOC of C (0..N/VEC)
 
   // LOCAL MEMS
-  __local float4 local_A[TSM][TSK/VEC];   // Local memory to fit a tile of TSM*TSK elements of A
-  __local float4 local_B[TSK][TSN/VEC];   // Local memory to fit a tile of TSK*TSN elements of B
+  __local float4 local_A[TSM][TSK/VEC+2];   // Local memory to fit a tile of TSM*TSK elements of A
+  __local float4 local_B[TSK][TSN/VEC];     // Local memory to fit a tile of TSK*TSN elements of B
 
   // ACCUMULATORS
   float4 acc[WPTM][WPTN];
