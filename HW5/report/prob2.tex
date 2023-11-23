@@ -2,6 +2,105 @@
 
 \begin{itemize}
 
-    \item { }
+    \item {
+        \textbf{병렬화 방식.}
+        주어진 행렬곱 연산은 우선 워크로드 단위로 쪼개진다. 출력 행렬 \texttt{C}는 미리 설정된 \texttt{TSM}, \texttt{TSN}
+        값에 따라 타일 단위로 쪼개져 각 워크 그룹에 할당된다. 각 타일은 한번 더, 미리 설정된 \texttt{WPTM}, \texttt{WPTN}
+        값에 따라 쪼개져 각 쓰레드에 할당된다. 연산 수행시에는 \texttt{float4} 자료형을 사용하여 벡터화된 데이터를 사용하여
+        여러 데이터에 대한 연산을 한 번에 수행한다. 또한, 입력 행렬 \texttt{A}와 \texttt{B}를 로컬 메모리에 캐싱하는 과정도
+        각 쓰레드마다 영역을 지정함으로써 병렬적으로 수행하도록 구현하였다.
+    }
+
+    \item{
+    
+        \textbf{\texttt{matmul.c}의 각 부분 설명.}
+
+        \texttt{matmul\_initialize} 함수에서는 다음과 같은 API가 사용되었다.
+        
+        \begin{itemize}
+            \item \texttt{clGetPlatformIDs}: 현재 시스템에서 사용 가능한 OpenCL 플랫폼의 ID를 얻는다.
+            \item \texttt{clGetDeviceIDs}: 선택한 OpenCL 플랫폼에 대한 디바이스 ID를 얻는다.
+            \item \texttt{clCreateContext}: OpenCL 컨텍스트를 생성한다.
+            \item \texttt{clCreateCommandQueue}: 컨텍스트에 대한 커맨드 큐를 생성한다.
+            \item \texttt{clCreateKernel}: 특정 프로그램으로부터 커널을 생성한다.
+            \item \texttt{clCreateBuffer}: 버퍼 객체를 생성하여 메모리를 할당한다.
+        \end{itemize}
+
+        \texttt{matmul} 함수에서는 다음과 같은 API가 사용되었다.
+        
+        \begin{itemize}
+            \item \texttt{clEnqueueWriteBuffer}: 호스트에서 디바이스로 데이터를 복사한다.
+            \item \texttt{clSetKernelArg}: 커널에 전달할 인자를 설정한다.
+            \item \texttt{clEnqueueNDRangeKernel}: 커널을 실행하기 위해 큐에 명령을 추가한다.
+            \item \texttt{clEnqueueReadBuffer}: 디바이스에서 호스트로 결과 데이터를 복사한다.
+        \end{itemize}
+
+        \texttt{matmul\_finalize} 함수에서는 다음과 같은 API가 사용되었다.
+
+        \begin{itemize}
+            \item \texttt{clReleaseMemObject}: 할당된 메모리 객체를 해제한다.
+            \item \texttt{clReleaseKernel}: 커널 객체를 해제한다.
+            \item \texttt{clReleaseProgram}: OpenCL 프로그램을 해제한다.
+            \item \texttt{clReleaseCommandQueue}: 커맨드 큐를 해제한다.
+            \item \texttt{clReleaseContext}: OpenCL 컨텍스트를 해제한다.
+        \end{itemize}
+    }
+
+    \item {
+        \textbf{최적화 방식.}
+
+        다음과 같은 순서로 최적화하였다.
+        
+        \begin{itemize}
+            \item {
+                Naive 커널 구현:
+                우선, 매우 단순한 방식으로 행렬곱을 수행하는 커널을 구현하였다.
+                이 커널은 매우 단순하게 작동하는 대신 임의의 크기의 입력 행렬에 대해 항상 연산을 수행할 수 있다.
+                이 커널은 \texttt{run\_performance.sh}에 대해 대략 130 GFLOPS의 성능을 보였다.
+            }
+            \item {
+                조건부 가속:
+                연산 커널을 수행하기 전 입력 차원을 확인하여, 가속에 용이한 입력 차원이라면
+                앞으로 구현할 특수 커널을 사용하고, 그렇지 않다면 naive 커널을 사용하도록 구현하였다.
+            }
+            \item {
+                타일링 및 로컬 메모리 사용:
+                타일의 크기를 지정하여 각 워크 그룹이 하나의 타일을 맡아 연산하도록 구현하였다.
+                이 때 구현의 편의를 위해 타일의 형태는 정사각형으로 설정하였다.
+                또한 이 과정에서 입력 행렬을 로컬 메모리에 캐시하여 연산에 사용하도록 하였다.
+                이를 통해 메모리 접근을 줄이고, 캐시 히트를 높이는 효과를 얻었다.
+                이 커널은 \texttt{run\_performance.sh}에 대해 대략 560 GFLOPS의 성능을 보였다.
+            }
+            \item {
+                쓰레드의 담당 영역 설정:
+                각 쓰레드가 타일의 여러 원소를 담당하도록 구현하였다.
+                이를 통해 로컬 메모리의 연속된 메모리 영역이 하나의 쓰레드에 의해 사용되도록 하였다.
+                이 커널은 \texttt{run\_performance.sh}에 대해 대략 1,000 GFLOPS의 성능을 보였다.
+            }
+            \item {
+                벡터 자료형 사용:
+                입력 행렬 및 로컬 메모리의 자료형을 \texttt{float4}로 설정하여 메모리 접근 및 연산을 벡터화하였다.
+                이 커널은 \texttt{run\_performance.sh}에 대해 대략 1,713 GFLOPS의 성능을 보였다.
+            }
+            \item {
+                직사각형 타일링:
+                타일의 크기를 더욱 최적화하기 위해 직사각형 형태의 타일을 사용하도록 구현하였다.
+                이 과정에서 행렬 \texttt{A}, \texttt{B}, \texttt{C}의 타일의 크기가 모두 다르게 설정되었다.
+                이 커널은 \texttt{run\_performance.sh}에 대해 대략 1,810 GFLOPS의 성능을 보였다.
+            }
+            \item {
+                뱅크 컨플릭트 회피:
+                로컬 메모리의 행 크기에 크기 2의 패딩을 추가하여 뱅크 컨플릭트를 회피하였다.
+                이 커널은 \texttt{run\_performance.sh}에 대해 최고 2,010 GFLOPS의 성능을 보였다.
+            }
+            \item {
+                레지스터 타일링:
+                연산 과정에서 로컬 메모리에서 레지스터로 데이터를 로드하는 과정을 최적화하기 위해
+                레지스터에 타일의 데이터를 캐시하도록 구현하였다.
+                이 커널은 \texttt{run\_performance.sh}에 대해 최고 2,250 GFLOPS의 성능을 보였다.
+            }
+            
+        \end{itemize}  
+    }
     
 \end{itemize}
