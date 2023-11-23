@@ -45,12 +45,26 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
   // RUN KERNEL (BLOCKING)
   const int TSM = 128;
   const int TSN = 128;
+  const int TSK = 16;
   const int WPTM = 1;
   const int WPTN = 8;
   const int VEC = 4;
 
-  const size_t local[2] = { TSM/WPTM, TSN/WPTN/VEC };
-  const size_t global[2] = { M/WPTM, N/WPTN/VEC };
+  size_t local[2], global[2];
+
+  if (M % TSM == 0 && N % TSN == 0 && K % TSK == 0) {
+    local[0] = TSM/WPTM;
+    local[1] = TSN/WPTN/VEC;
+    global[0] = M/WPTM;
+    global[1] = N/WPTN/VEC;
+  }
+  else {
+    const int TS = 16;
+    local[0] = TS;
+    local[1] = TS;
+    global[0] = (M + TSM - 1) / TSM * TS;
+    global[1] = (N + TSN - 1) / TSN * TS;
+  }
 
   err = clEnqueueNDRangeKernel(queue, kernel, 2, NULL, global, local, 0, NULL, NULL);
   CHECK_ERROR(err);

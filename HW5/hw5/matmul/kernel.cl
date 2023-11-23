@@ -1,21 +1,22 @@
-__kernel void sgemm(__global float4 *A, __global float4 *B, __global float4 *C, int M, int N, int K) {
-  // HYPERPARAMS
-  const int VEC = 4;    // Vector size (4 floats)
+/* HYPERPARAMS */
+#define VEC 4
+#define TSM 128
+#define TSN 128
+#define TSK 16
 
-  const int TSM = 128;   // Local work size (M)
-  const int TSN = 128;   // Local work size (N)
-  const int TSK = 16;   // Local work size (K)
-  const int TSNV = TSN/VEC;
-  const int TSKV = TSK/VEC;
-  const int WPTM = 1;    // Work per thread (M)
-  const int WPTN = 8;    // Work per thread (N)
+#define TSNV TSN/VEC
+#define TSKV TSK/VEC
 
-  const int TOTAL_LOAD_A = TSM * TSK / VEC; // Total data load per workgroup (A)
-  const int TOTAL_LOAD_B = TSK * TSN / VEC; // Total data load per workgroup (B)
+#define WPTM 1
+#define WPTN 8
 
-  const int THREAD_LOAD_A = TOTAL_LOAD_A / (TSM * TSK / WPTM / WPTN); // Data load per thread (A)
-  const int THREAD_LOAD_B = TOTAL_LOAD_B / (TSK * TSN / WPTM / WPTN); // Data load per thread (B)
-  
+#define TOTAL_LOAD_A TSM * TSK / VEC
+#define TOTAL_LOAD_B TSK * TSN / VEC
+
+#define THREAD_LOAD_A TOTAL_LOAD_A / (TSM * TSK / WPTM / WPTN)
+#define THREAD_LOAD_B TOTAL_LOAD_B / (TSK * TSN / WPTM / WPTN)
+
+__kernel void sgemm_regular(__global float4 *A, __global float4 *B, __global float4 *C, int M, int N, int K) {
   // IDENTIFY THREAD
   const int local_row = get_local_id(0);    // Local row ID (max: TSM/WPTM)
   const int local_col = get_local_id(1);    // Local col ID (max: TSN/WPTN/VEC)
@@ -65,9 +66,8 @@ __kernel void sgemm(__global float4 *A, __global float4 *B, __global float4 *C, 
 
     // Multiplicate and accumulate
     for (int k=0; k<TSK; k++) {
-      for (int wm=0; wm<WPTM; wm++) {
+      for (int wm=0; wm<WPTM; wm++)
         val_A[wm] = local_A[WPTM * local_row + wm][k/VEC][k % VEC];
-      }
 
       for (int wn=0; wn<WPTN; wn++) {
         val_B = local_B[k][local_col * WPTN + wn];
@@ -75,7 +75,6 @@ __kernel void sgemm(__global float4 *A, __global float4 *B, __global float4 *C, 
           acc[wm][wn] += val_A[wm] * val_B;
 
       }
-      
     }
 
     // Barrier for local memory
@@ -87,4 +86,47 @@ __kernel void sgemm(__global float4 *A, __global float4 *B, __global float4 *C, 
     for (int wn=0; wn<WPTN; wn++)
       C[N/VEC * (global_row + wm) + global_col + wn] = acc[wm][wn];
   
+}
+
+__kernel void sgemm_naive(__global float *A, __global float *B, __global float *C, int M, int N, int K) {
+  // IDENTIFY THREAD
+  const int local_row = get_local_id(0);    // Local row ID (max: TSM/WPTM)
+  const int local_col = get_local_id(1);    // Local col ID (max: TSN/WPTN/VEC)
+  const int group_row = get_group_id(0);    // Work-group ID (0..M/TSM)
+  const int group_col = get_group_id(1);    // Work-group ID (0..N/TSN)
+
+  int tile_M, tile_N;
+
+  if (group_row == M/TSM) tile_M = M % TSM;
+  else tile_M = TSM;
+
+  if (group_col == N/TSN) tile_N = N % TSN;
+  else tile_N = TSN;
+
+  // COMPUTE
+  const int TS = 16;
+  int wm_start = tile_M * local_row / TS;
+  int wm_end = tile_M * (local_row + 1) / TS;
+  int wn_start = tile_N * local_col / TS;
+  int wn_end = tile_N * (local_col + 1) / TS;
+
+  for (int wm=wm_start; wm<wm_end; wm++) {
+    for (int wn=wn_start; wn<wn_end; wn++) {
+      float acc = 0.0f;
+      for (int k=0; k<K; k++) {
+        acc += A[K * (group_row * TSM + wm) + k] * B[N * k + group_col * TSN + wn];
+      }
+      C[N * (group_row * TSM + wm) + group_col * TSN + wn] = acc;
+    }
+  }
+
+}
+
+__kernel void sgemm(__global float4 *A, __global float4 *B, __global float4 *C, int M, int N, int K) {
+  if (M % TSM == 0 && N % TSN == 0 && K % TSK == 0) {
+    sgemm_regular(A, B, C, M, N, K);
+  }
+  else {
+    sgemm_naive(A, B, C, M, N, K);
+  }
 }
