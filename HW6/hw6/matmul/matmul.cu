@@ -4,6 +4,8 @@
 #include <cuda_runtime.h>
 #include <mpi.h>
 
+// #define DEBUG
+
 #define CHECK_CUDA(call)                                              \
   do {                                                                \
     cudaError_t status_ = call;                                       \
@@ -28,6 +30,7 @@ static __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N,
 
 #define NGPU 4
 
+int M_node_start, M_node_end, M_node_size;
 static int Mbegin[NGPU], Mend[NGPU];
 static int ngpu;
 static cudaStream_t streams[NGPU];
@@ -36,7 +39,24 @@ static float *A_gpu[NGPU], *B_gpu[NGPU], *C_gpu[NGPU];
 
 void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
 
-  if (mpi_rank != 0) return; // FIXME
+  // Scatter mat A
+  float *Abuf = (float *)A;
+  if (mpi_rank == 0) {
+    MPI_Scatter(A, M * K / mpi_world_size, MPI_FLOAT, MPI_IN_PLACE, M * K / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+  }
+  else {
+    MPI_Scatter(NULL, M * K / mpi_world_size, MPI_FLOAT, Abuf + K * M_node_start, M * K / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+  }
+
+  // Broadcast mat B
+  float *Bbuf = (float *)B;
+
+  MPI_Bcast(Bbuf, K * N, MPI_FLOAT, 0, MPI_COMM_WORLD);
+  
+  #ifdef DEBUG
+  printf("[rank %d] Bbuf[0] = %f\n", mpi_rank, Bbuf[0]);
+  printf("[rank %d] Bbuf[-1] = %f\n", mpi_rank, Bbuf[K*N-1]);
+  #endif
 
   // Async memcpy H->D on each GPU
   for (int i = 0; i < ngpu; i++) {
@@ -71,6 +91,18 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
     cudaSetDevice(i);
     cudaStreamSynchronize(streams[i]);
   }
+
+  for (int i=0; i<ngpu; i++) {
+    printf("[rank %d] device %d: %f\n", mpi_rank, i, C[Mbegin[i] * N]);
+  }
+
+  // Gather mat C
+  if (mpi_rank == 0) {
+    MPI_Gather(MPI_IN_PLACE, M * N / mpi_world_size, MPI_FLOAT, C, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+  }
+  else {
+    MPI_Gather(C + N * M_node_start, M * N / mpi_world_size, MPI_FLOAT, NULL, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+  }
 }
 
 
@@ -87,11 +119,21 @@ void matmul_initialize(int M, int N, int K) {
     printf("[rank %d] device %d: %s\n", mpi_rank, i, props[i].name);
   }
 
+  M_node_start = M * mpi_rank / mpi_world_size;
+  M_node_end = M * (mpi_rank + 1) / mpi_world_size;
+  M_node_size = M_node_end - M_node_start;
+
   for (int i = 0; i < ngpu; i++) {
-    Mbegin[i] = M / ngpu * i;
-    Mend[i] = M / ngpu * (i + 1);
-    if (i == ngpu - 1) Mend[i] = M;
+    Mbegin[i] = M_node_start + M_node_size * i / ngpu;
+    Mend[i] = M_node_start + M_node_size * (i + 1) / ngpu;
+    if (i == ngpu - 1) Mend[i] = M_node_end;
   }
+
+  #ifdef DEBUG
+  for (int i = 0; i < ngpu; i++) {
+    printf("[rank %d] device %d: Mbegin = %d, Mend = %d\n", mpi_rank, i, Mbegin[i], Mend[i]);
+  }
+  #endif
 
   for (int i = 0; i < ngpu; i++) {
     CHECK_CUDA(cudaSetDevice(i));
