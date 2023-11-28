@@ -1,21 +1,25 @@
 /******************************************************************************
  *  OPTIMIZATION NOTE
+ * 
+ *  [OPT TARGET]
+ *  Total latency under 0.11 sec
  *  
  *  [OPT LOG]
- *  Last optimization:  allocating multiple elements per thread (2D)
- *  Baseline latency:   0.238121 sec -> 0.222934 sec (-0.015187 sec)
- *  matmul_kernel:      0.024486 sec -> 0.009299 sec (-0.015187 sec)
+ *  Last optimization:  use only 1 node!
+ *   - Using multiple nodes is not efficient because of MPI overhead
+ *  Baseline latency:   0.222934 sec -> 0.112174 sec (-0.110760 sec)
  * 
  *  [LATENCY BREAKDOWN]
- *  0. total latency:   0.222934 sec (100.0%)
- *  1. MPI_Scatter:     0.080922 sec ( 36.3%)
- *  2. MPI_Bcast:       0.015000 sec (  6.7%)
- *  3. cudaMemcpyAsync: 0.027967 sec ( 12.5%)
- *  4. matmul_kernel:   0.009299 sec (  4.2%)
- *  5. cudaMemcpyAsync: 0.003006 sec (  1.3%)
- *  6. MPI_Gather:      0.062237 sec ( 27.9%)
+ *  0. total latency:   0.112174 sec (100.0%)
+ *  1. MPI_Scatter:     0.000000 sec (  0.0%)
+ *  2. MPI_Bcast:       0.000000 sec (  0.0%)
+ *  3. cudaMemcpyAsync: 0.031271 sec ( 27.9%)
+ *  4. matmul_kernel:   0.064265 sec ( 57.3%)
+ *  5. cudaMemcpyAsync: 0.020092 sec ( 17.9%)
+ *  6. MPI_Gather:      0.000000 sec ( 0.0%)
+ *  7. etc(error):     -0.003454 sec (-3.1%)
  * 
- *  => Plan: stop optimizing kernel, fine-grain MPI
+ *  => Plan: optimize kernel
  *  
 ******************************************************************************/
 
@@ -24,6 +28,9 @@
 
 #include <cuda_runtime.h>
 #include <mpi.h>
+#include <pthread.h>
+
+/** UTIL FUNCS **/
 
 #define CHECK_CUDA(call)                                              \
   do {                                                                \
@@ -37,6 +44,12 @@
 
 #define CEIL_DIV(x, y) (((x) + (y)-1) / (y))
 
+
+/** CUDA CONSTS **/
+#define NGPU 4
+
+
+/** KERNEL CONSTS **/
 #define BLOCK_M     128
 #define BLOCK_N     128
 #define BLOCK_K     8
@@ -46,17 +59,27 @@
 #define NUM_TN      (BLOCK_N / THREAD_N)
 #define NUM_THS     (NUM_TM * NUM_TN)
 #define LDNK_STRD   (NUM_THS / BLOCK_K)
-
 #define NUM_BDIM    ((BLOCK_M * BLOCK_N) / (THREAD_M * THREAD_N))
 
-static int mpi_rank, mpi_world_size;
 
-static __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N, int K) {
-  /* SMEM ALLOC */
+/** GLOBALS **/
+static int mpi_rank, mpi_world_size;
+int M_node_start, M_node_end, M_node_size;
+static int Mbegin[NGPU], Mend[NGPU];
+static int ngpu;
+static cudaStream_t streams[NGPU];
+static float *A_gpu[NGPU], *B_gpu[NGPU], *C_gpu[NGPU];
+
+
+/** FUNCS **/
+static __global__ void matmul_kernel(
+  float *A, float *B, float *C, int M, int N, int K
+) {
+  // SMEM ALLOC
   __shared__ float Asub[BLOCK_M][BLOCK_K];
   __shared__ float Bsub[BLOCK_K][BLOCK_N];
 
-  /* REG ALLOC */
+  // REG ALLOC
   float sum[THREAD_M][THREAD_N] = {0.0};
   float tempA[THREAD_M];
   float tempB[THREAD_N];
@@ -71,7 +94,7 @@ static __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N,
   int lnk = threadIdx.x / BLOCK_K;
   int lk = threadIdx.x % BLOCK_K;
 
-  /* ITER THROUGH K */
+  // ITER THROUGH K
   for (int k=0; k<K; k+=BLOCK_K) {
     for (int lda=0; lda<BLOCK_M; lda+=LDNK_STRD) {
       Asub[lda + lnk][lk] = A_offset[K * (lda + lnk) + lk];
@@ -109,26 +132,25 @@ static __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N,
     }
   }
 
-}
-
-#define NGPU 4
-
-int M_node_start, M_node_end, M_node_size;
-static int Mbegin[NGPU], Mend[NGPU];
-static int ngpu;
-static cudaStream_t streams[NGPU];
-static float *A_gpu[NGPU], *B_gpu[NGPU], *C_gpu[NGPU];
-
+} 
 
 void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
 
   // Scatter mat A
   float *Abuf = (float *)A;
   if (mpi_rank == 0) {
-    MPI_Scatter(A, M * K / mpi_world_size, MPI_FLOAT, MPI_IN_PLACE, M * K / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    MPI_Scatter(
+      A, M * K / mpi_world_size, MPI_FLOAT, 
+      MPI_IN_PLACE, M * K / mpi_world_size,
+      MPI_FLOAT, 0, MPI_COMM_WORLD
+    );
   }
   else {
-    MPI_Scatter(NULL, M * K / mpi_world_size, MPI_FLOAT, Abuf + K * M_node_start, M * K / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    MPI_Scatter(
+      NULL, M * K / mpi_world_size, MPI_FLOAT, 
+      Abuf + K * M_node_start, M * K / mpi_world_size,
+      MPI_FLOAT, 0, MPI_COMM_WORLD
+    );
   }
 
   // Broadcast mat B
@@ -138,18 +160,22 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
   // Async memcpy H->D on each GPU
   for (int i = 0; i < ngpu; i++) {
     CHECK_CUDA(cudaSetDevice(i));
-    CHECK_CUDA(cudaMemcpyAsync(A_gpu[i], &A[Mbegin[i] * K],
-                               (Mend[i] - Mbegin[i]) * K * sizeof(float),
-                               cudaMemcpyHostToDevice, streams[i]));
-    CHECK_CUDA(cudaMemcpyAsync(B_gpu[i], B, K * N * sizeof(float),
-                               cudaMemcpyHostToDevice, streams[i]));
+    CHECK_CUDA(cudaMemcpyAsync(
+      A_gpu[i], &A[Mbegin[i] * K],
+      (Mend[i] - Mbegin[i]) * K * sizeof(float),
+      cudaMemcpyHostToDevice, streams[i]
+    ));
+    CHECK_CUDA(cudaMemcpyAsync(
+      B_gpu[i], B, K * N * sizeof(float),
+      cudaMemcpyHostToDevice, streams[i]
+    ));
   }
 
   // Run kernels asynchronously on each GPU
   for (int i = 0; i < ngpu; i++) {
     CHECK_CUDA(cudaSetDevice(i));
     dim3 blockDim(NUM_BDIM);
-    dim3 gridDim(CEIL_DIV(N, BLOCK_N), CEIL_DIV(Mend[i] - Mbegin[i], BLOCK_M));
+    dim3 gridDim(CEIL_DIV(Mend[i] - Mbegin[i], BLOCK_M), CEIL_DIV(N, BLOCK_N));
     matmul_kernel<<<gridDim, blockDim, 0, streams[i]>>>(
         A_gpu[i], B_gpu[i], C_gpu[i], Mend[i] - Mbegin[i], N, K);
     CHECK_CUDA(cudaGetLastError());
@@ -171,10 +197,16 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
 
   // Gather mat C
   if (mpi_rank == 0) {
-    MPI_Gather(MPI_IN_PLACE, M * N / mpi_world_size, MPI_FLOAT, C, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    MPI_Gather(
+      MPI_IN_PLACE, M * N / mpi_world_size, MPI_FLOAT, 
+      C, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD
+    );
   }
   else {
-    MPI_Gather(C + N * M_node_start, M * N / mpi_world_size, MPI_FLOAT, NULL, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+    MPI_Gather(
+      C + N * M_node_start, M * N / mpi_world_size, MPI_FLOAT, 
+      NULL, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD
+    );
   }
 }
 
