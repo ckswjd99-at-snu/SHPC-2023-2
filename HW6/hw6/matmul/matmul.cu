@@ -1,16 +1,21 @@
 /******************************************************************************
- *  NOTE: LATENCY BREAKDOWN
+ *  OPTIMIZATION NOTE
  *  
- *  Baseline latency:   0.274198 sec
+ *  [OPT LOG]
+ *  Last optimization:  allocating multiple elements per thread
+ *  Baseline latency:   0.274198 sec -> 0.238121 sec (-0.036077 sec)
+ *  matmul_kernel:      0.060563 sec -> 0.024486 sec (-0.036077 sec)
  * 
- *  1. MPI_Scatter:     0.080922 sec (29.5%)
- *  2. MPI_Bcast:       0.015000 sec ( 5.5%)
- *  3. cudaMemcpyAsync: 0.027967 sec (10.2%)
- *  4. matmul_kernel:   0.060563 sec (22.0%)
- *  5. cudaMemcpyAsync: 0.003006 sec ( 1.0%)
- *  6. MPI_Gather:      0.062237 sec (22.7%)
+ *  [LATENCY BREAKDOWN]
+ *  0. total latency:   0.238121 sec (100.0%)
+ *  1. MPI_Scatter:     0.080922 sec ( 34.0%)
+ *  2. MPI_Bcast:       0.015000 sec (  6.3%)
+ *  3. cudaMemcpyAsync: 0.027967 sec ( 11.7%)
+ *  4. matmul_kernel:   0.024486 sec ( 10.3%)
+ *  5. cudaMemcpyAsync: 0.003006 sec (  1.3%)
+ *  6. MPI_Gather:      0.062237 sec ( 26.1%)
  * 
- *  => Plan: optimize kernel first, then fine-grain MPI
+ *  => Plan: optimize kernel more, then fine-grain MPI
  *  
 ******************************************************************************/
 
@@ -31,43 +36,57 @@
   } while (0)
 
 #define CEIL_DIV(x, y) (((x) + (y)-1) / (y))
-#define BLOCK_SIZE 32
+
+#define BLOCK_M     64
+#define BLOCK_N     64
+#define BLOCK_K     8
+#define THREAD_M    8
+#define NUM_BDIM    (BLOCK_M * BLOCK_N / THREAD_M)
 
 static int mpi_rank, mpi_world_size;
 
 static __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N, int K) {
   /* SMEM ALLOC */
-  __shared__ float Asub[BLOCK_SIZE][BLOCK_SIZE];
-  __shared__ float Bsub[BLOCK_SIZE][BLOCK_SIZE];
+  __shared__ float Asub[BLOCK_M][BLOCK_K];
+  __shared__ float Bsub[BLOCK_K][BLOCK_N];
 
   /* REG ALLOC */
-  float sum = 0.0;
+  float sum[THREAD_M] = {0.0};
 
-  float *A_offset = A + K * blockIdx.x * BLOCK_SIZE;
-  float *B_offset = B + blockIdx.y * BLOCK_SIZE;
-  float *C_offset = C + N * blockIdx.x * BLOCK_SIZE + blockIdx.y * BLOCK_SIZE;
+  float *A_offset = A + K * blockIdx.x * BLOCK_M;
+  float *B_offset = B + blockIdx.y * BLOCK_N;
+  float *C_offset = C + N * blockIdx.x * BLOCK_M + blockIdx.y * BLOCK_N;
 
-  int tx = threadIdx.x / BLOCK_SIZE;
-  int ty = threadIdx.x % BLOCK_SIZE;
+  int tx = threadIdx.x / BLOCK_N;
+  int ty = threadIdx.x % BLOCK_N;
+
+  int lnk = threadIdx.x / BLOCK_K;
+  int lk = threadIdx.x % BLOCK_K;
 
   /* ITER THROUGH K */
-  for (int k=0; k<K; k+=BLOCK_SIZE) {
-    Asub[tx][ty] = A_offset[K * tx + ty];
-    Bsub[tx][ty] = B_offset[N * tx + ty];
+  for (int k=0; k<K; k+=BLOCK_K) {
+
+    Asub[lnk][lk] = A_offset[K * lnk + lk];
+    Bsub[lk][lnk] = B_offset[N * lk + lnk];
 
     __syncthreads();
 
-    A_offset += BLOCK_SIZE;
-    B_offset += BLOCK_SIZE * N;
+    A_offset += BLOCK_K;
+    B_offset += BLOCK_K * N;
 
-    for (int bk=0; bk<BLOCK_SIZE; bk++) {
-      sum += Asub[tx][bk] * Bsub[bk][ty];
+    for (int bk=0; bk<BLOCK_K; bk++) {
+      float tempB = Bsub[bk][ty];
+      for (int tm=0; tm<THREAD_M; tm++) {
+        sum[tm] += Asub[tx * THREAD_M + tm][bk] * tempB;
+      }
     }
 
     __syncthreads();
   }
 
-  C_offset[N * tx + ty] = sum;
+  for (int tm=0; tm<THREAD_M; tm++) {
+    C_offset[N * (tx * THREAD_M + tm) + ty] = sum[tm];
+  }
 
 }
 
@@ -108,8 +127,8 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
   // Run kernels asynchronously on each GPU
   for (int i = 0; i < ngpu; i++) {
     CHECK_CUDA(cudaSetDevice(i));
-    dim3 blockDim(BLOCK_SIZE * BLOCK_SIZE);
-    dim3 gridDim(CEIL_DIV(N, BLOCK_SIZE), CEIL_DIV(Mend[i] - Mbegin[i], BLOCK_SIZE));
+    dim3 blockDim(NUM_BDIM);
+    dim3 gridDim(CEIL_DIV(N, BLOCK_N), CEIL_DIV(Mend[i] - Mbegin[i], BLOCK_M));
     matmul_kernel<<<gridDim, blockDim, 0, streams[i]>>>(
         A_gpu[i], B_gpu[i], C_gpu[i], Mend[i] - Mbegin[i], N, K);
     CHECK_CUDA(cudaGetLastError());
