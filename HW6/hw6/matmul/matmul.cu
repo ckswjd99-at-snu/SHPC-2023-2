@@ -1,3 +1,19 @@
+/******************************************************************************
+ *  NOTE: LATENCY BREAKDOWN
+ *  
+ *  Baseline latency:   0.274198 sec
+ * 
+ *  1. MPI_Scatter:     0.080922 sec (29.5%)
+ *  2. MPI_Bcast:       0.015000 sec ( 5.5%)
+ *  3. cudaMemcpyAsync: 0.027967 sec (10.2%)
+ *  4. matmul_kernel:   0.060563 sec (22.0%)
+ *  5. cudaMemcpyAsync: 0.003006 sec ( 1.0%)
+ *  6. MPI_Gather:      0.062237 sec (22.7%)
+ * 
+ *  => Plan: optimize kernel first, then fine-grain MPI
+ *  
+******************************************************************************/
+
 #include "matmul.h"
 #include "util.h"
 
@@ -20,13 +36,39 @@
 static int mpi_rank, mpi_world_size;
 
 static __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N, int K) {
-  const int x = blockIdx.x * BLOCK_SIZE + (threadIdx.x / BLOCK_SIZE);
-  const int y = blockIdx.y * BLOCK_SIZE + (threadIdx.x % BLOCK_SIZE);
+  /* SMEM ALLOC */
+  __shared__ float Asub[BLOCK_SIZE][BLOCK_SIZE];
+  __shared__ float Bsub[BLOCK_SIZE][BLOCK_SIZE];
 
-  if (x >= M || y >= N) return;
+  /* REG ALLOC */
   float sum = 0.0;
-  for (int k = 0; k < K; ++k) sum += A[x * K + k] * B[k * N + y];
-  C[x * N + y] = sum;
+
+  float *A_offset = A + K * blockIdx.x * BLOCK_SIZE;
+  float *B_offset = B + blockIdx.y * BLOCK_SIZE;
+  float *C_offset = C + N * blockIdx.x * BLOCK_SIZE + blockIdx.y * BLOCK_SIZE;
+
+  int tx = threadIdx.x / BLOCK_SIZE;
+  int ty = threadIdx.x % BLOCK_SIZE;
+
+  /* ITER THROUGH K */
+  for (int k=0; k<K; k+=BLOCK_SIZE) {
+    Asub[tx][ty] = A_offset[K * tx + ty];
+    Bsub[tx][ty] = B_offset[N * tx + ty];
+
+    __syncthreads();
+
+    A_offset += BLOCK_SIZE;
+    B_offset += BLOCK_SIZE * N;
+
+    for (int bk=0; bk<BLOCK_SIZE; bk++) {
+      sum += Asub[tx][bk] * Bsub[bk][ty];
+    }
+
+    __syncthreads();
+  }
+
+  C_offset[N * tx + ty] = sum;
+
 }
 
 #define NGPU 4
