@@ -4,8 +4,6 @@
 #include <cuda_runtime.h>
 #include <mpi.h>
 
-// #define DEBUG
-
 #define CHECK_CUDA(call)                                              \
   do {                                                                \
     cudaError_t status_ = call;                                       \
@@ -16,16 +14,19 @@
     }                                                                 \
   } while (0)
 
+#define CEIL_DIV(x, y) (((x) + (y)-1) / (y))
+#define BLOCK_SIZE 32
+
 static int mpi_rank, mpi_world_size;
 
-static __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N,
-                                     int K) {
-  int j = blockDim.x * blockIdx.x + threadIdx.x;
-  int i = blockDim.y * blockIdx.y + threadIdx.y;
-  if (i >= M || j >= N) return;
+static __global__ void matmul_kernel(float *A, float *B, float *C, int M, int N, int K) {
+  const int x = blockIdx.x * BLOCK_SIZE + (threadIdx.x / BLOCK_SIZE);
+  const int y = blockIdx.y * BLOCK_SIZE + (threadIdx.x % BLOCK_SIZE);
+
+  if (x >= M || y >= N) return;
   float sum = 0.0;
-  for (int k = 0; k < K; ++k) sum += A[i * K + k] * B[k * N + j];
-  C[i * N + j] = sum;
+  for (int k = 0; k < K; ++k) sum += A[x * K + k] * B[k * N + y];
+  C[x * N + y] = sum;
 }
 
 #define NGPU 4
@@ -50,13 +51,7 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
 
   // Broadcast mat B
   float *Bbuf = (float *)B;
-
   MPI_Bcast(Bbuf, K * N, MPI_FLOAT, 0, MPI_COMM_WORLD);
-  
-  #ifdef DEBUG
-  printf("[rank %d] Bbuf[0] = %f\n", mpi_rank, Bbuf[0]);
-  printf("[rank %d] Bbuf[-1] = %f\n", mpi_rank, Bbuf[K*N-1]);
-  #endif
 
   // Async memcpy H->D on each GPU
   for (int i = 0; i < ngpu; i++) {
@@ -71,8 +66,8 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
   // Run kernels asynchronously on each GPU
   for (int i = 0; i < ngpu; i++) {
     CHECK_CUDA(cudaSetDevice(i));
-    dim3 blockDim(16, 16);
-    dim3 gridDim((N + 16 - 1) / 16, (Mend[i] - Mbegin[i] + 16 - 1) / 16);
+    dim3 blockDim(BLOCK_SIZE * BLOCK_SIZE);
+    dim3 gridDim(CEIL_DIV(N, BLOCK_SIZE), CEIL_DIV(Mend[i] - Mbegin[i], BLOCK_SIZE));
     matmul_kernel<<<gridDim, blockDim, 0, streams[i]>>>(
         A_gpu[i], B_gpu[i], C_gpu[i], Mend[i] - Mbegin[i], N, K);
     CHECK_CUDA(cudaGetLastError());
@@ -90,10 +85,6 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
   for (int i = 0; i < ngpu; i++) {
     cudaSetDevice(i);
     cudaStreamSynchronize(streams[i]);
-  }
-
-  for (int i=0; i<ngpu; i++) {
-    printf("[rank %d] device %d: %f\n", mpi_rank, i, C[Mbegin[i] * N]);
   }
 
   // Gather mat C
@@ -128,12 +119,6 @@ void matmul_initialize(int M, int N, int K) {
     Mend[i] = M_node_start + M_node_size * (i + 1) / ngpu;
     if (i == ngpu - 1) Mend[i] = M_node_end;
   }
-
-  #ifdef DEBUG
-  for (int i = 0; i < ngpu; i++) {
-    printf("[rank %d] device %d: Mbegin = %d, Mend = %d\n", mpi_rank, i, Mbegin[i], Mend[i]);
-  }
-  #endif
 
   for (int i = 0; i < ngpu; i++) {
     CHECK_CUDA(cudaSetDevice(i));
