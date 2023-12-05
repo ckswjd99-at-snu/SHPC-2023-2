@@ -7,17 +7,17 @@
  *  [OPT LOG]
  *  Last optimization:  use only 1 node!
  *   - Using multiple nodes is not efficient because of MPI overhead
- *  Baseline latency:   0.222934 sec -> 0.112174 sec (-0.110760 sec)
+ *  Baseline latency:   0.157520 sec
  * 
  *  [LATENCY BREAKDOWN]
- *  0. total latency:   0.112174 sec (100.0%)
+ *  0. total latency:   0.157520 sec (100.0%)
  *  1. MPI_Scatter:     0.000000 sec (  0.0%)
  *  2. MPI_Bcast:       0.000000 sec (  0.0%)
- *  3. cudaMemcpyAsync: 0.031271 sec ( 27.9%)
- *  4. matmul_kernel:   0.064265 sec ( 57.3%)
- *  5. cudaMemcpyAsync: 0.020092 sec ( 17.9%)
+ *  3. cudaMemcpyAsync: 0.052137 sec ( 33.1%)
+ *  4. matmul_kernel:   0.058474 sec ( 37.1%)
+ *  5. cudaMemcpyAsync: 0.020299 sec ( 12.9%)
  *  6. MPI_Gather:      0.000000 sec ( 0.0%)
- *  7. etc(error):     -0.003454 sec (-3.1%)
+ *  7. etc(error):      0.026610 sec ( 16.9%)
  * 
  *  => Plan: optimize kernel
  *  
@@ -76,7 +76,7 @@ static __global__ void matmul_kernel(
   float *A, float *B, float *C, int M, int N, int K
 ) {
   // SMEM ALLOC
-  __shared__ float Asub[BLOCK_M][BLOCK_K];
+  __shared__ float Asub[BLOCK_K][BLOCK_M];
   __shared__ float Bsub[BLOCK_K][BLOCK_N];
 
   // REG ALLOC
@@ -97,7 +97,7 @@ static __global__ void matmul_kernel(
   // ITER THROUGH K
   for (int k=0; k<K; k+=BLOCK_K) {
     for (int lda=0; lda<BLOCK_M; lda+=LDNK_STRD) {
-      Asub[lda + lnk][lk] = A_offset[K * (lda + lnk) + lk];
+      Asub[lk][lda + lnk] = A_offset[K * (lda + lnk) + lk];
     }
     for (int ldb=0; ldb<BLOCK_N; ldb+=LDNK_STRD) {
       Bsub[lk][ldb + lnk] = B_offset[N * lk + ldb + lnk];
@@ -110,7 +110,7 @@ static __global__ void matmul_kernel(
 
     for (int bk=0; bk<BLOCK_K; bk++) {
       for (int tm=0; tm<THREAD_M; tm++) {
-        tempA[tm] = Asub[THREAD_M * tx + tm][bk];
+        tempA[tm] = Asub[bk][THREAD_M * tx + tm];
       }
       for (int tn=0; tn<THREAD_N; tn++) {
         tempB[tn] = Bsub[bk][THREAD_N * ty + tn];
@@ -137,25 +137,25 @@ static __global__ void matmul_kernel(
 void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
 
   // Scatter mat A
-  float *Abuf = (float *)A;
-  if (mpi_rank == 0) {
-    MPI_Scatter(
-      A, M * K / mpi_world_size, MPI_FLOAT, 
-      MPI_IN_PLACE, M * K / mpi_world_size,
-      MPI_FLOAT, 0, MPI_COMM_WORLD
-    );
-  }
-  else {
-    MPI_Scatter(
-      NULL, M * K / mpi_world_size, MPI_FLOAT, 
-      Abuf + K * M_node_start, M * K / mpi_world_size,
-      MPI_FLOAT, 0, MPI_COMM_WORLD
-    );
-  }
+  // float *Abuf = (float *)A;
+  // if (mpi_rank == 0) {
+  //   MPI_Scatter(
+  //     A, M * K / mpi_world_size, MPI_FLOAT, 
+  //     MPI_IN_PLACE, M * K / mpi_world_size,
+  //     MPI_FLOAT, 0, MPI_COMM_WORLD
+  //   );
+  // }
+  // else {
+  //   MPI_Scatter(
+  //     NULL, M * K / mpi_world_size, MPI_FLOAT, 
+  //     Abuf + K * M_node_start, M * K / mpi_world_size,
+  //     MPI_FLOAT, 0, MPI_COMM_WORLD
+  //   );
+  // }
 
   // Broadcast mat B
-  float *Bbuf = (float *)B;
-  MPI_Bcast(Bbuf, K * N, MPI_FLOAT, 0, MPI_COMM_WORLD);
+  // float *Bbuf = (float *)B;
+  // MPI_Bcast(Bbuf, K * N, MPI_FLOAT, 0, MPI_COMM_WORLD);
 
   // Async memcpy H->D on each GPU
   for (int i = 0; i < ngpu; i++) {
@@ -196,18 +196,18 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
   }
 
   // Gather mat C
-  if (mpi_rank == 0) {
-    MPI_Gather(
-      MPI_IN_PLACE, M * N / mpi_world_size, MPI_FLOAT, 
-      C, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD
-    );
-  }
-  else {
-    MPI_Gather(
-      C + N * M_node_start, M * N / mpi_world_size, MPI_FLOAT, 
-      NULL, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD
-    );
-  }
+  // if (mpi_rank == 0) {
+  //   MPI_Gather(
+  //     MPI_IN_PLACE, M * N / mpi_world_size, MPI_FLOAT, 
+  //     C, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD
+  //   );
+  // }
+  // else {
+  //   MPI_Gather(
+  //     C + N * M_node_start, M * N / mpi_world_size, MPI_FLOAT, 
+  //     NULL, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD
+  //   );
+  // }
 }
 
 
