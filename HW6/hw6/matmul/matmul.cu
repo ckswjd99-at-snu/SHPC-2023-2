@@ -5,21 +5,21 @@
  *  Total latency under 0.11 sec
  *  
  *  [OPT LOG]
- *  Last optimization: interleave memcpy and kernel & OpenMP
- *   - make stream_mem using only for memory copy
- *   - handle multiple GPU streams using OpenMP
- *  Baseline latency:   0.137291 sec
+ *  Last optimization: vectorize & bank conflict
+ *   - vectorize GMEM & SMEM access
+ *   - resolve bank conflict by padding
+ *  Baseline latency:   0.117895 sec
  * 
  *  [LATENCY BREAKDOWN]
- *  0. total latency:       0.137291 sec (100.0%)
+ *  0. total latency:       0.117895 sec (100.0%)
  *  1. MPI_Scatter:         0.000000 sec (  0.0%)
  *  2. MPI_Bcast:           0.000000 sec (  0.0%)
- *  3. cudaMemcpyAsync(B):  0.008148 sec (  5.9%)
- *  3. cudaMemcpyAsync(A):  0.027521 sec ( 20.0%)
- *  4. matmul_kernel:       0.091986 sec ( 67.0%)
- *  5. cudaMemcpyAsync(C):  0.000004 sec (  0.0%)
+ *  3. cudaMemcpyAsync(B):  0.008217 sec (  7.0%)
+ *  3. cudaMemcpyAsync(A):  0.032611 sec ( 27.7%)
+ *  4. matmul_kernel:       0.072684 sec ( 61.7%)
+ *  5. cudaMemcpyAsync(C):  0.000116 sec (  0.1%)
  *  6. MPI_Gather:          0.000000 sec (  0.0%)
- *  7. etc(error):          0.009632 sec (  7.0%)
+ *  7. etc(error):          0.004267 sec (  3.6%)
  * 
  *  => Plan: optimize kernel
  *  
@@ -58,10 +58,11 @@
 #define BLOCK_K     8
 #define THREAD_M    8
 #define THREAD_N    8
+#define VEC_SIZE    4
 #define NUM_TM      (BLOCK_M / THREAD_M)
 #define NUM_TN      (BLOCK_N / THREAD_N)
 #define NUM_THS     (NUM_TM * NUM_TN)
-#define LDNK_STRD   (NUM_THS / BLOCK_K)
+#define LDNK_STRD   (NUM_THS / (BLOCK_K / VEC_SIZE))
 #define NUM_BDIM    ((BLOCK_M * BLOCK_N) / (THREAD_M * THREAD_N))
 
 
@@ -80,8 +81,8 @@ static __global__ void matmul_kernel(
   float *A, float *B, float *C, int M, int N, int K
 ) {
   // SMEM ALLOC
-  __shared__ float Asub[BLOCK_K][BLOCK_M];
-  __shared__ float Bsub[BLOCK_K][BLOCK_N];
+  __shared__ float Asub[BLOCK_K][BLOCK_M+4];
+  __shared__ float Bsub[BLOCK_K][BLOCK_N+4];
 
   // REG ALLOC
   float sum[THREAD_M][THREAD_N] = {0.0};
@@ -95,16 +96,24 @@ static __global__ void matmul_kernel(
   int tx = threadIdx.x / NUM_TN;
   int ty = threadIdx.x % NUM_TN;
 
-  int lnk = threadIdx.x / BLOCK_K;
-  int lk = threadIdx.x % BLOCK_K;
+  int lnk_A = threadIdx.x / (BLOCK_K / VEC_SIZE);
+  int lk_A = threadIdx.x % (BLOCK_K / VEC_SIZE);
+
+  int lnk_B = threadIdx.x / BLOCK_K;
+  int lk_B = threadIdx.x % BLOCK_K;
 
   // ITER THROUGH K
   for (int k=0; k<K; k+=BLOCK_K) {
     for (int lda=0; lda<BLOCK_M; lda+=LDNK_STRD) {
-      Asub[lk][lda + lnk] = A_offset[K * (lda + lnk) + lk];
+      float4 A_offset_temp = *reinterpret_cast<float4 *>(&A_offset[K * (lda + lnk_A) + lk_A * VEC_SIZE]);
+      Asub[lk_A * VEC_SIZE + 0][lda + lnk_A] = A_offset_temp.x;
+      Asub[lk_A * VEC_SIZE + 1][lda + lnk_A] = A_offset_temp.y;
+      Asub[lk_A * VEC_SIZE + 2][lda + lnk_A] = A_offset_temp.z;
+      Asub[lk_A * VEC_SIZE + 3][lda + lnk_A] = A_offset_temp.w;
     }
     for (int ldb=0; ldb<BLOCK_N; ldb+=LDNK_STRD) {
-      Bsub[lk][ldb + lnk] = B_offset[N * lk + ldb + lnk];
+      *reinterpret_cast<float4 *>(Bsub[lk_B] + ldb + lnk_B * VEC_SIZE) 
+      = *reinterpret_cast<float4 *>(&B_offset[N * lk_B + ldb + lnk_B * VEC_SIZE]);
     }
     
     __syncthreads();
@@ -113,11 +122,13 @@ static __global__ void matmul_kernel(
     B_offset += BLOCK_K * N;
 
     for (int bk=0; bk<BLOCK_K; bk++) {
-      for (int tm=0; tm<THREAD_M; tm++) {
-        tempA[tm] = Asub[bk][THREAD_M * tx + tm];
+      for (int tm=0; tm<THREAD_M; tm+=VEC_SIZE) {
+        *reinterpret_cast<float4 *>(&tempA[tm])
+         = *reinterpret_cast<float4 *>(&Asub[bk][THREAD_M * tx + tm]);
       }
-      for (int tn=0; tn<THREAD_N; tn++) {
-        tempB[tn] = Bsub[bk][THREAD_N * ty + tn];
+      for (int tn=0; tn<THREAD_N; tn+=VEC_SIZE) {
+        *reinterpret_cast<float4 *>(&tempB[tn])
+         = *reinterpret_cast<float4 *>(&Bsub[bk][THREAD_N * ty + tn]);
       }
 
       for (int tm=0; tm<THREAD_M; tm++) {
