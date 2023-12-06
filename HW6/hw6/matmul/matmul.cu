@@ -5,23 +5,22 @@
  *  Total latency under 0.11 sec
  *  
  *  [OPT LOG]
- *  Last optimization: vectorize & bank conflict
- *   - vectorize GMEM & SMEM access
- *   - resolve bank conflict by padding
- *  Baseline latency:   0.117895 sec
+ *  Last optimization: hyperparameter tuning
+ *   - increase THREAD_M from 8 to 16
+ *  Baseline latency:   0.098886 sec
  * 
  *  [LATENCY BREAKDOWN]
- *  0. total latency:       0.117895 sec (100.0%)
+ *  0. total latency:       0.098886 sec (100.0%)
  *  1. MPI_Scatter:         0.000000 sec (  0.0%)
  *  2. MPI_Bcast:           0.000000 sec (  0.0%)
- *  3. cudaMemcpyAsync(B):  0.008217 sec (  7.0%)
- *  3. cudaMemcpyAsync(A):  0.032611 sec ( 27.7%)
- *  4. matmul_kernel:       0.072684 sec ( 61.7%)
- *  5. cudaMemcpyAsync(C):  0.000116 sec (  0.1%)
+ *  3. cudaMemcpyAsync(B):  0.007043 sec (  7.1%)
+ *  3. cudaMemcpyAsync(A):  0.025976 sec ( 26.3%)
+ *  4. matmul_kernel:       0.053739 sec ( 54.4%)
+ *  5. cudaMemcpyAsync(C):  0.000000 sec (  0.0%)
  *  6. MPI_Gather:          0.000000 sec (  0.0%)
- *  7. etc(error):          0.004267 sec (  3.6%)
+ *  7. etc(error):          0.012128 sec ( 12.3%)
  * 
- *  => Plan: optimize kernel
+ *  => Plan: autotune hyperparameters
  *  
 ******************************************************************************/
 
@@ -56,7 +55,7 @@
 #define BLOCK_M     128
 #define BLOCK_N     128
 #define BLOCK_K     8
-#define THREAD_M    8
+#define THREAD_M    16
 #define THREAD_N    8
 #define VEC_SIZE    4
 #define NUM_TM      (BLOCK_M / THREAD_M)
@@ -73,6 +72,7 @@ static int Mbegin[NGPU], Mend[NGPU];
 static int ngpu;
 static cudaStream_t streams[NGPU];
 static cudaStream_t streams_mem[NGPU];
+cudaEvent_t htod_event[NGPU], dtoh_event[NGPU];
 static float *A_gpu[NGPU], *B_gpu[NGPU], *C_gpu[NGPU];
 
 
@@ -112,7 +112,7 @@ static __global__ void matmul_kernel(
       Asub[lk_A * VEC_SIZE + 3][lda + lnk_A] = A_offset_temp.w;
     }
     for (int ldb=0; ldb<BLOCK_N; ldb+=LDNK_STRD) {
-      *reinterpret_cast<float4 *>(Bsub[lk_B] + ldb + lnk_B * VEC_SIZE) 
+      *reinterpret_cast<float4 *>(&Bsub[lk_B][ldb + lnk_B * VEC_SIZE])
       = *reinterpret_cast<float4 *>(&B_offset[N * lk_B + ldb + lnk_B * VEC_SIZE]);
     }
     
@@ -142,8 +142,9 @@ static __global__ void matmul_kernel(
   }
 
   for (int tm=0; tm<THREAD_M; tm++) {
-    for (int tn=0; tn<THREAD_N; tn++) {
-      C_offset[N * (THREAD_M * tx + tm) + THREAD_N * ty + tn] = sum[tm][tn];
+    for (int tn=0; tn<THREAD_N; tn+=VEC_SIZE) {
+      *reinterpret_cast<float4 *>(&C_offset[N * (THREAD_M * tx + tm) + THREAD_N * ty + tn])
+      = *reinterpret_cast<float4 *>(&sum[tm][tn]);
     }
   }
 
@@ -176,7 +177,7 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
 
   const int NUM_WORKLOAD = 1;
 
-  #pragma omp parallel for num_threads(ngpu)
+  // #pragma omp parallel for num_threads(ngpu)
   for (int i = 0; i < ngpu; i++) {
     CHECK_CUDA(cudaMemcpyAsync(
       B_gpu[i], B, K * N * sizeof(float),
@@ -189,10 +190,6 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
     CHECK_CUDA(cudaSetDevice(i));
 
     for (int wl=0; wl<NUM_WORKLOAD; wl++) {
-      cudaEvent_t htod_event, dtoh_event;
-
-      cudaEventCreate(&htod_event);
-      cudaEventCreate(&dtoh_event);
 
       int Mbegin_wl = Mbegin[i] + wl * (Mend[i] - Mbegin[i]) / NUM_WORKLOAD;
       int Mend_wl   = Mbegin[i] + (wl + 1) * (Mend[i] - Mbegin[i]) / NUM_WORKLOAD;
@@ -204,8 +201,8 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
         cudaMemcpyHostToDevice, streams_mem[i]
       ));
 
-      CHECK_CUDA(cudaEventRecord(htod_event, streams_mem[i]));
-      CHECK_CUDA(cudaStreamWaitEvent(streams[i], htod_event, 0));
+      CHECK_CUDA(cudaEventRecord(htod_event[i], streams_mem[i]));
+      CHECK_CUDA(cudaStreamWaitEvent(streams[i], htod_event[i], 0));
 
       // Run kernels asynchronously on each GPU
       dim3 blockDim(NUM_BDIM);
@@ -214,8 +211,8 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
           A_gpu[i], B_gpu[i], C_gpu[i], Mend_wl - Mbegin_wl, N, K);
       CHECK_CUDA(cudaGetLastError());
 
-      CHECK_CUDA(cudaEventRecord(dtoh_event, streams[i]));
-      CHECK_CUDA(cudaStreamWaitEvent(streams_mem[i], dtoh_event, 0));
+      CHECK_CUDA(cudaEventRecord(dtoh_event[i], streams[i]));
+      CHECK_CUDA(cudaStreamWaitEvent(streams_mem[i], dtoh_event[i], 0));
 
       // Async memcpy D->H on each GPU
       CHECK_CUDA(cudaMemcpyAsync(
@@ -223,9 +220,6 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
         (Mend_wl - Mbegin_wl) * N * sizeof(float),
         cudaMemcpyDeviceToHost, streams_mem[i]
       ));
-
-      cudaEventDestroy(htod_event);
-      cudaEventDestroy(dtoh_event);
     }
   }
 
@@ -281,6 +275,8 @@ void matmul_initialize(int M, int N, int K) {
     CHECK_CUDA(cudaSetDevice(i));
     CHECK_CUDA(cudaStreamCreate(&streams[i]));
     CHECK_CUDA(cudaStreamCreate(&streams_mem[i]));
+    CHECK_CUDA(cudaEventCreate(&htod_event[i]));
+    CHECK_CUDA(cudaEventCreate(&dtoh_event[i]));
   }
 
   for (int i = 0; i < ngpu; i++) {
@@ -302,5 +298,7 @@ void matmul_finalize() {
     CHECK_CUDA(cudaFree(C_gpu[i]));
     CHECK_CUDA(cudaStreamDestroy(streams[i]));
     CHECK_CUDA(cudaStreamDestroy(streams_mem[i]));
+    CHECK_CUDA(cudaEventDestroy(htod_event[i]));
+    CHECK_CUDA(cudaEventDestroy(dtoh_event[i]));
   }
 }
