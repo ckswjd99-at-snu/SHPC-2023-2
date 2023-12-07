@@ -150,30 +150,7 @@ static __global__ void matmul_kernel(
 
 } 
 
-void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
-
-  #ifdef MULTI_NODE
-  // Scatter mat A
-  float *Abuf = (float *)A;
-  if (mpi_rank == 0) {
-    MPI_Scatter(
-      A, M * K / mpi_world_size, MPI_FLOAT, 
-      MPI_IN_PLACE, M * K / mpi_world_size,
-      MPI_FLOAT, 0, MPI_COMM_WORLD
-    );
-  }
-  else {
-    MPI_Scatter(
-      NULL, M * K / mpi_world_size, MPI_FLOAT, 
-      Abuf + K * M_node_start, M * K / mpi_world_size,
-      MPI_FLOAT, 0, MPI_COMM_WORLD
-    );
-  }
-
-  // Broadcast mat B
-  float *Bbuf = (float *)B;
-  MPI_Bcast(Bbuf, K * N, MPI_FLOAT, 0, MPI_COMM_WORLD);
-  #endif
+void matmul(float *A, float *B, float *C, int M, int N, int K) {
 
   const int NUM_WORKLOAD = 1;
 
@@ -229,22 +206,6 @@ void matmul(const float *A, const float *B, float *C, int M, int N, int K) {
     cudaStreamSynchronize(streams[i]);
   }
 
-
-  #ifdef MULTI_NODE
-  // Gather mat C
-  if (mpi_rank == 0) {
-    MPI_Gather(
-      MPI_IN_PLACE, M * N / mpi_world_size, MPI_FLOAT, 
-      C, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD
-    );
-  }
-  else {
-    MPI_Gather(
-      C + N * M_node_start, M * N / mpi_world_size, MPI_FLOAT, 
-      NULL, M * N / mpi_world_size, MPI_FLOAT, 0, MPI_COMM_WORLD
-    );
-  }
-  #endif
 }
 
 
