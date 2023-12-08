@@ -7,7 +7,26 @@
 #include "classifier.h"
 #include "util.h"
 
-static int mpi_rank;
+
+/** SECTION: Constants and hyperparameters **/
+#define NUM_PARAMETER (OFFSET21 + 4)
+
+static int mpi_size, mpi_rank;
+static char processor_name[MPI_MAX_PROCESSOR_NAME];
+static int iam_root;
+
+
+/** SECTION: DEBUGGING **/
+#define DEBUG 0
+#if DEBUG == 1
+#define DEBUG_PRINT(...) do { \
+  fprintf(stderr, "(%s|rank=%d) ", processor_name, mpi_rank); \
+  fprintf(stderr, __VA_ARGS__); \
+} while (0)
+#else
+#define DEBUG_PRINT(...)
+#endif
+
 
 /** SECTION: Tensor **/
 
@@ -278,50 +297,27 @@ ComputeEngine::~ComputeEngine() {
   pthread_mutex_destroy(&mutex_queue);
   pthread_cond_destroy(&cond_queue);
 
-  delete w_conv1;
-  delete b_conv1;
-  delete w_conv2;
-  delete b_conv2;
-  delete w_conv3;
-  delete b_conv3;
-  delete w_conv4;
-  delete b_conv4;
-  delete w_conv5;
-  delete b_conv5;
-  delete w_conv6;
-  delete b_conv6;
-  delete w_fc1;
-  delete b_fc1;
-  delete w_fc2;
-  delete b_fc2;
-  delete w_fc3;
-  delete b_fc3;
-  delete gamma_conv1;
-  delete gamma_conv6;
-  delete beta_conv1;
-  delete beta_conv6;
-  delete a_conv1;
-  delete a_layernorm1;
-  delete a_relu1;
-  delete a_pool1;
-  delete a_conv2;
-  delete a_relu2;
-  delete a_pool2;
-  delete a_conv3;
-  delete a_relu3;
-  delete a_conv4;
-  delete a_relu4;
-  delete a_conv5;
-  delete a_relu5;
-  delete a_conv6;
-  delete a_layernorm6;
-  delete a_relu6;
-  delete a_pool6;
+  delete w_conv1; delete b_conv1;
+  delete w_conv2; delete b_conv2;
+  delete w_conv3; delete b_conv3;
+  delete w_conv4; delete b_conv4;
+  delete w_conv5; delete b_conv5;
+  delete w_conv6; delete b_conv6;
+  delete w_fc1; delete b_fc1;
+  delete w_fc2; delete b_fc2;
+  delete w_fc3; delete b_fc3;
+  
+  delete gamma_conv1; delete gamma_conv6;
+  delete beta_conv1; delete beta_conv6;
+  delete a_conv1; delete a_layernorm1; delete a_relu1; delete a_pool1;
+  delete a_conv2; delete a_relu2; delete a_pool2;
+  delete a_conv3; delete a_relu3;
+  delete a_conv4; delete a_relu4;
+  delete a_conv5; delete a_relu5;
+  delete a_conv6; delete a_layernorm6; delete a_relu6; delete a_pool6;
   delete a_collapse;
-  delete a_linear1;
-  delete a_relu7;
-  delete a_linear2;
-  delete a_relu8;
+  delete a_linear1; delete a_relu7;
+  delete a_linear2; delete a_relu8;
   delete a_linear3;
 }
 
@@ -360,8 +356,10 @@ int ComputeEngine::pop() {
 }
 
 void ComputeEngine::inference(int num_input) {
+  DEBUG_PRINT("Inference %d\n", num_input);
   
   for (int batch = 0; batch < num_input; batch++) {
+    DEBUG_PRINT("Inference %d/%d\n", batch+1, num_input);
     Tensor *input = new Tensor({1, VOCAB_SIZE, MAX_LENGTH}, input_to_process + batch * VOCAB_SIZE * MAX_LENGTH);
 
     // Conv block 1 : Conv1d + LayerNorm + ReLU + MaxPool1d
@@ -434,31 +432,69 @@ void *ComputeEngine::run_func(void *arg) {
 
 /** SECTION: Classifier interface **/
 
-// load the parameter binary file and store parameters into Tensors
-// Only the first process (root, mpi_rank == 0) has the parameter
-// You must broadcast it to the others
 void initialize_classifier(float *parameter, int N) {
+  int len_name;
+  MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
   MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
-  
-  if (mpi_rank == 0) {
-    compute_engine = new ComputeEngine(parameter, N);
-  }
+  MPI_Get_processor_name(processor_name, &len_name);
+  iam_root = (mpi_rank == 0);
+
+  // Broadcast parameters
+  if (parameter == nullptr)
+    parameter = (float *) calloc(NUM_PARAMETER, sizeof(float));
+
+  MPI_Bcast(parameter, NUM_PARAMETER, MPI_FLOAT, 0, MPI_COMM_WORLD);
+
+  compute_engine = new ComputeEngine(parameter, N / mpi_size);
 }
 
-// Only the first process (root, mpi_rank == 0) has the input and output
-// Parallelization method is totally up to you, but you should gather 
-// the output at rank 0
 void classifier(float *input_, float *output_, int N) {
-  if (mpi_rank == 0) {
-    compute_engine->set_input(input_);
-    compute_engine->set_output(output_);
-    compute_engine->run();
-    compute_engine->push(N);
-    compute_engine->join();
+  // Scatter input & initialize memory
+  DEBUG_PRINT("Scatter input\n");
+  if (iam_root) {
+    MPI_Scatter(
+      input_, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT,
+      MPI_IN_PLACE, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT, 
+      0, MPI_COMM_WORLD
+    );
   }
+  else {
+    if (input_ == nullptr) 
+      input_ = (float *) calloc(
+        N * VOCAB_SIZE * MAX_LENGTH / mpi_size, 
+        sizeof(float)
+      );
+    if (output_ == nullptr) 
+      output_ = (float *) calloc(N / mpi_size, sizeof(float));
+
+    MPI_Scatter(
+      MPI_IN_PLACE, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT,
+      input_, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT, 
+      0, MPI_COMM_WORLD
+    );
+  }
+  DEBUG_PRINT("Scatter input done\n");
+  
+
+  // Compute
+  compute_engine->set_input(input_);
+  compute_engine->set_output(output_);
+  compute_engine->run();
+  compute_engine->push(N / mpi_size);
+  compute_engine->join();
+
+  // Gather output
+  if (iam_root) {
+    MPI_Gather(MPI_IN_PLACE, N / mpi_size, MPI_FLOAT,
+               output_, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+  }
+  else {
+    MPI_Gather(output_, N / mpi_size, MPI_FLOAT,
+               MPI_IN_PLACE, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
+  }
+
 }
 
-// Free all dynamically allocated variables
 void finalize_classifier() {
   if (mpi_rank == 0) {
     delete compute_engine;
