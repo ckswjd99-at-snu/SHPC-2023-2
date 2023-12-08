@@ -17,6 +17,9 @@
     - [ ] `conv1d_relu_conv1d_relu_conv1d_relu_conv1d_stat` (Conv block 3 - Conv lbock 6(front))
     - [ ] `linear_relu_linear` (FC block 2 - FC block 3)
 
+## Optimization History
+- Baseline: 2.12 input(s)/sec
+
 ## Model Structure
 
 ```
