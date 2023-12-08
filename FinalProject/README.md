@@ -2,9 +2,11 @@
 
 ## Optimization Methods to Apply
 
+- [x] Synchronously offload input to other nodes using MPI
+
 - [ ] Asynchronously offload input to other nodes using MPI
 
-- [ ] Calculate multiple batches at once
+- [x] Calculate multiple batches at once
 
 - [ ] Calculate each operators with CUDA: `conv1d`, `layernorm`, `relu`, `maxpool1d`, `linear`, etc.
     - [ ] Create CUDA version of each operators
@@ -19,6 +21,8 @@
 
 ## Optimization History
 - Baseline: 2.12 input(s)/sec
+- Synchronous offload: 8.33 input(s)/sec
+- Naively batched computation: 7.86 input(s)/sec
 
 ## Model Structure
 

@@ -10,6 +10,8 @@
 
 /** SECTION: Constants and hyperparameters **/
 #define NUM_PARAMETER (OFFSET21 + 4)
+#define POP_BATCH_SIZE 100
+#define COMPUTE_BATCH_SIZE 2
 
 static int mpi_size, mpi_rank;
 static char processor_name[MPI_MAX_PROCESSOR_NAME];
@@ -26,6 +28,14 @@ static int iam_root;
 #else
 #define DEBUG_PRINT(...)
 #endif
+
+int checksum(float *buf, int N) {
+  int sum = 0;
+  for (int i = 0; i < N; ++i)
+    sum += (int) buf[i];
+
+  return sum;
+}
 
 
 /** SECTION: Tensor **/
@@ -81,22 +91,28 @@ void conv1d(Tensor *input, Tensor *weight, Tensor *bias, Tensor *output,
   int out_channels = weight->shape[0];
   int in_channels = weight->shape[1];
   int kernel_size = weight->shape[2];
+  int batch_size = input->shape[0];
   int input_length = input->shape[2];
   int output_length =
       (input->shape[2] + 2 * padding - dilation * (kernel_size - 1) - 1) / stride + 1;
+    
+  int single_input_size = input->num_elem() / batch_size;
+  int single_output_size = output->num_elem() / batch_size;
 
-  for (int oc = 0; oc < out_channels; ++oc) {
-    for (int ol = 0; ol < output_length; ++ol) {
-      float val = 0.0f;
-      int offset = ol;
-      for (int ic = 0; ic < in_channels; ++ic) {
-        for (int ks = 0; ks < kernel_size; ++ks) {
-          val += weight->buf[oc * in_channels * kernel_size + ic * kernel_size + ks] *
-                 input->buf[ic * input_length + ks + offset];
+  for (int batch = 0; batch < batch_size; batch++) {
+    for (int oc = 0; oc < out_channels; ++oc) {
+      for (int ol = 0; ol < output_length; ++ol) {
+        float val = 0.0f;
+        int offset = ol;
+        for (int ic = 0; ic < in_channels; ++ic) {
+          for (int ks = 0; ks < kernel_size; ++ks) {
+            val += weight->buf[oc * in_channels * kernel_size + ic * kernel_size + ks] *
+                  input->buf[batch * single_input_size + ic * input_length + ks + offset];
+          }
         }
+        if (has_bias) val += bias->buf[oc];
+        output->buf[batch * single_output_size + oc * output_length + ol] = val;
       }
-      if (has_bias) val += bias->buf[oc];
-      output->buf[oc * output_length + ol] = val;
     }
   }
 }
@@ -111,18 +127,24 @@ void relu(Tensor *input, Tensor *output) {
 }
 
 void maxpool1d(Tensor *input, Tensor *output, int kernel_size, int stride) {
+  int B = input->shape[0];
   int IL = input->shape[2];
   int OC = output->shape[1];
   int OL = output->shape[2];
 
-  for (int oc = 0; oc < OC; ++oc) {
-    for (int ol = 0; ol < OL; ++ol) {
-      float mx = -1e99;
-      for (int ks = 0; ks < kernel_size; ++ks) {
-        float val = input->buf[oc * IL + ks + ol * stride];
-        if (val > mx) mx = val;
+  int single_input_size = input->num_elem() / B;
+  int single_output_size = output->num_elem() / B;
+
+  for (int batch = 0; batch < B; batch++) {
+    for (int oc = 0; oc < OC; ++oc) {
+      for (int ol = 0; ol < OL; ++ol) {
+        float mx = -1e99;
+        for (int ks = 0; ks < kernel_size; ++ks) {
+          float val = input->buf[batch * single_input_size + oc * IL + ks + ol * stride];
+          if (val > mx) mx = val;
+        }
+        output->buf[batch * single_output_size + oc * OL + ol] = mx;
       }
-      output->buf[oc * OL + ol] = mx;
     }
   }
 }
@@ -135,42 +157,56 @@ void collapse(Tensor *input, Tensor *output) {
 
 void linear(Tensor *input, Tensor *weight, Tensor *bias, Tensor *output,
             bool has_bias) {
+  int B = input->shape[0];
   int IC = input->shape[1];
   int OC = output->shape[1];
 
-  for (int oc = 0; oc < OC; ++oc) {
-    float val = 0.0;
-    for (int ic = 0; ic < IC; ++ic) {
-      val += input->buf[ic] * weight->buf[oc * IC + ic];
+  int single_input_size = input->num_elem() / B;
+  int single_output_size = output->num_elem() / B;
+
+  for (int batch = 0; batch < B; batch++) {
+    for (int oc = 0; oc < OC; ++oc) {
+      float val = 0.0;
+      for (int ic = 0; ic < IC; ++ic) {
+        val += input->buf[batch * single_input_size + ic] * weight->buf[oc * IC + ic];
+      }
+      if (has_bias) val += bias->buf[oc];
+      output->buf[batch * single_output_size + oc] = val;
     }
-    if (has_bias) val += bias->buf[oc];
-    output->buf[oc] = val;
   }
 }
 
 void layernorm(Tensor *input, Tensor *gamma, Tensor *beta, Tensor *output) {
-  // E[X], E[X^2]
-  float sum1 = 0.0f, sum2 = 0.0f;
-  for (int i = 0; i < input->num_elem(); ++i) {
-      sum1 += input->buf[i];
-      sum2 += input->buf[i] * input->buf[i];
-  }
-  float mean1 = sum1 / (float)input->num_elem();
-  float mean2 = sum2 / (float)input->num_elem();
+  int B = input->shape[0];
 
-  // V[X]
-  float var = mean2 - mean1 * mean1; 
+  int single_input_size = input->num_elem() / B;
+  int single_output_size = output->num_elem() / B;
 
-  // Normalization
-  for (int i = 0; i < input->num_elem(); ++i) {
-    output->buf[i] = (input->buf[i] - mean1) / sqrtf(var + 1e-5) * gamma->buf[i] + beta->buf[i];
+  for (int batch = 0; batch < B; batch++) {
+    // E[X], E[X^2]
+    float sum1 = 0.0f, sum2 = 0.0f;
+    for (int i = 0; i < single_input_size; ++i) {
+        sum1 += input->buf[batch * single_input_size + i];
+        sum2 += input->buf[batch * single_input_size + i] * input->buf[batch * single_input_size + i];
+    }
+    float mean1 = sum1 / (float)single_input_size;
+    float mean2 = sum2 / (float)single_input_size;
+
+    // V[X]
+    float var = mean2 - mean1 * mean1; 
+
+    // Normalization
+    for (int i = 0; i < single_output_size; ++i) {
+      output->buf[batch * single_output_size + i]
+       = (input->buf[batch * single_input_size + i] - mean1)
+       / sqrtf(var + 1e-5) * gamma->buf[i] + beta->buf[i];
+    }
   }
+
 }
 
 
 /** SECTION: COMPUTE_ENGINE **/
-#define COMPUTE_BATCH_SIZE 10
-#define COMPUTE_MAX_QUEUE_SIZE 16
 
 struct ComputeEngine {
 public:
@@ -268,29 +304,29 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_) {
   b_fc3 = new Tensor({4}, parameter_ + OFFSET21);
 
   // Initialize activations
-  a_conv1 = new Tensor({1, 256, 1008});
-  a_layernorm1 = new Tensor({1, 256, 1008});
-  a_relu1 = new Tensor({1, 256, 1008});
-  a_pool1 = new Tensor({1, 256, 336});
-  a_conv2 = new Tensor({1, 256, 330});
-  a_relu2 = new Tensor({1, 256, 330});
-  a_pool2 = new Tensor({1, 256, 110});
-  a_conv3 = new Tensor({1, 256, 108});
-  a_relu3 = new Tensor({1, 256, 108});
-  a_conv4 = new Tensor({1, 256, 106});
-  a_relu4 = new Tensor({1, 256, 106});
-  a_conv5 = new Tensor({1, 256, 104});
-  a_relu5 = new Tensor({1, 256, 104});
-  a_conv6 = new Tensor({1, 256, 102});
-  a_layernorm6 = new Tensor({1, 256, 102});
-  a_relu6 = new Tensor({1, 256, 102});
-  a_pool6 = new Tensor({1, 256, 34});
-  a_collapse = new Tensor({1, 8704});
-  a_linear1 = new Tensor({1, 1024});
-  a_relu7 = new Tensor({1, 1024});
-  a_linear2 = new Tensor({1, 1024});
-  a_relu8 = new Tensor({1, 1024});
-  a_linear3 = new Tensor({1, 4});
+  a_conv1 = new Tensor({COMPUTE_BATCH_SIZE, 256, 1008});
+  a_layernorm1 = new Tensor({COMPUTE_BATCH_SIZE, 256, 1008});
+  a_relu1 = new Tensor({COMPUTE_BATCH_SIZE, 256, 1008});
+  a_pool1 = new Tensor({COMPUTE_BATCH_SIZE, 256, 336});
+  a_conv2 = new Tensor({COMPUTE_BATCH_SIZE, 256, 330});
+  a_relu2 = new Tensor({COMPUTE_BATCH_SIZE, 256, 330});
+  a_pool2 = new Tensor({COMPUTE_BATCH_SIZE, 256, 110});
+  a_conv3 = new Tensor({COMPUTE_BATCH_SIZE, 256, 108});
+  a_relu3 = new Tensor({COMPUTE_BATCH_SIZE, 256, 108});
+  a_conv4 = new Tensor({COMPUTE_BATCH_SIZE, 256, 106});
+  a_relu4 = new Tensor({COMPUTE_BATCH_SIZE, 256, 106});
+  a_conv5 = new Tensor({COMPUTE_BATCH_SIZE, 256, 104});
+  a_relu5 = new Tensor({COMPUTE_BATCH_SIZE, 256, 104});
+  a_conv6 = new Tensor({COMPUTE_BATCH_SIZE, 256, 102});
+  a_layernorm6 = new Tensor({COMPUTE_BATCH_SIZE, 256, 102});
+  a_relu6 = new Tensor({COMPUTE_BATCH_SIZE, 256, 102});
+  a_pool6 = new Tensor({COMPUTE_BATCH_SIZE, 256, 34});
+  a_collapse = new Tensor({COMPUTE_BATCH_SIZE, 8704});
+  a_linear1 = new Tensor({COMPUTE_BATCH_SIZE, 1024});
+  a_relu7 = new Tensor({COMPUTE_BATCH_SIZE, 1024});
+  a_linear2 = new Tensor({COMPUTE_BATCH_SIZE, 1024});
+  a_relu8 = new Tensor({COMPUTE_BATCH_SIZE, 1024});
+  a_linear3 = new Tensor({COMPUTE_BATCH_SIZE, 4});
 }
 
 ComputeEngine::~ComputeEngine() {
@@ -349,7 +385,7 @@ int ComputeEngine::pop() {
   int num_input = 0;
   pthread_mutex_lock(&mutex_queue);
   if (num_input_ready == 0) pthread_cond_wait(&cond_queue, &mutex_queue);
-  num_input = std::min(num_input_ready, COMPUTE_BATCH_SIZE);
+  num_input = std::min(num_input_ready, POP_BATCH_SIZE);
   num_input_ready -= num_input;
   pthread_mutex_unlock(&mutex_queue);
   return num_input;
@@ -358,9 +394,15 @@ int ComputeEngine::pop() {
 void ComputeEngine::inference(int num_input) {
   DEBUG_PRINT("Inference %d\n", num_input);
   
-  for (int batch = 0; batch < num_input; batch++) {
-    DEBUG_PRINT("Inference %d/%d\n", batch+1, num_input);
-    Tensor *input = new Tensor({1, VOCAB_SIZE, MAX_LENGTH}, input_to_process + batch * VOCAB_SIZE * MAX_LENGTH);
+  for (int batch = 0; batch < num_input; batch+=COMPUTE_BATCH_SIZE) {
+    DEBUG_PRINT("Inference %d/%d\n", num_input_processed+1, num_input);
+
+    int now_batch_size = std::min(COMPUTE_BATCH_SIZE, num_input - batch);
+    
+    Tensor *input = new Tensor(
+      {now_batch_size, VOCAB_SIZE, MAX_LENGTH}, 
+      input_to_process + batch * VOCAB_SIZE * MAX_LENGTH
+    );
 
     // Conv block 1 : Conv1d + LayerNorm + ReLU + MaxPool1d
     conv1d(input, w_conv1, b_conv1, a_conv1, 1, 0, 1, true);
@@ -405,16 +447,20 @@ void ComputeEngine::inference(int num_input) {
     // FC block 3 : Linear
     linear(a_relu8, w_fc3, b_fc3, a_linear3, true);
 
-    float max_val = -1e99f;
-    int max_idx = 0;
-    for (int i = 0; i < a_linear3->num_elem(); ++i) {
-      if (a_linear3->buf[i] > max_val) {
-        max_val = a_linear3->buf[i];
-        max_idx = i;
+    int single_logit_size = a_linear3->num_elem() / now_batch_size;
+
+    for (int b = 0; b < now_batch_size; b++) {
+      float max_val = -1e99f;
+      int max_idx = 0;
+      for (int i = 0; i < single_logit_size; ++i) {
+        if (a_linear3->buf[b * single_logit_size + i] > max_val) {
+          max_val = a_linear3->buf[b * single_logit_size + i];
+          max_idx = i;
+        }
       }
+      output_buf[num_input_processed++] = (float)max_idx;
     }
 
-    output_buf[num_input_processed++] = max_idx;
   }
 
   input_to_process += num_input * VOCAB_SIZE * MAX_LENGTH;
