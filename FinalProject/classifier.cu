@@ -22,7 +22,7 @@
 #define CEIL_DIV(x, y) (((x) + (y)-1) / (y))
 
 #define NUM_PARAMETER (OFFSET21 + 4)
-#define POP_BATCH_SIZE 100
+#define POP_BATCH_SIZE 16
 #define COMPUTE_BATCH_SIZE 1
 
 static int mpi_size, mpi_rank;
@@ -46,9 +46,6 @@ static float *w_conv3_gpu[NGPU], *b_conv3_gpu[NGPU];
 static float *w_conv4_gpu[NGPU], *b_conv4_gpu[NGPU];
 static float *w_conv5_gpu[NGPU], *b_conv5_gpu[NGPU];
 static float *w_conv6_gpu[NGPU], *b_conv6_gpu[NGPU];
-
-
-
 
 
 /** SECTION: DEBUGGING **/
@@ -294,7 +291,7 @@ void layernorm(Tensor *input, Tensor *gamma, Tensor *beta, Tensor *output) {
 
 struct ComputeEngine {
 public:
-  ComputeEngine(float *parameter, int num_input);
+  ComputeEngine(float *parameter, int num_input, int gpu_idx);
   ~ComputeEngine();
 
   void set_input(float *input_buf_);
@@ -311,6 +308,9 @@ private:
   float *output_buf;
   int num_input;
   
+  // GPU
+  int gpu_idx;
+
   // Queue
   float *input_to_process;
   int num_input_ready;
@@ -326,16 +326,12 @@ private:
   pthread_t thread;
 
   // Parameters
-  Tensor *w_conv1, *w_conv2, *w_conv3, *w_conv4, *w_conv5, *w_conv6, *b_conv1,
-      *b_conv2, *b_conv3, *b_conv4, *b_conv5, *b_conv6, *w_fc1, *w_fc2, *w_fc3,
+  Tensor *w_fc1, *w_fc2, *w_fc3,
       *b_fc1, *b_fc2, *b_fc3, *gamma_conv1, *beta_conv1, *gamma_conv6, *beta_conv6;
 
   // Activations
   Tensor *a_conv1, *a_layernorm1, *a_relu1, *a_pool1;
-  Tensor *a_conv2, *a_relu2, *a_pool2;
-  Tensor *a_conv3, *a_relu3;
-  Tensor *a_conv4, *a_relu4;
-  Tensor *a_conv5, *a_relu5;
+  Tensor *a_relu2, *a_pool2;
   Tensor *a_conv6, *a_layernorm6, *a_relu6, *a_pool6;
   Tensor *a_collapse;
   Tensor *a_linear1, *a_relu7;
@@ -343,19 +339,15 @@ private:
   Tensor *a_linear3;
 };
 
-ComputeEngine *compute_engine;  // Singleton
+ComputeEngine *compute_engines[NGPU];
 
-ComputeEngine::ComputeEngine(float *parameter_, int num_input_) {
-  if (compute_engine != nullptr) {
-    printf("ComputeEngine is a singleton class\n");
-    exit(1);
-  }
-  compute_engine = this;
-
+ComputeEngine::ComputeEngine(float *parameter_, int num_input_, int gpu_idx_) {
   // Initialize member variables
   input_buf = nullptr;
   output_buf = nullptr;
   num_input = num_input_;
+
+  gpu_idx = gpu_idx_;
 
   // Initialize queue
   num_input_ready = 0;
@@ -449,20 +441,8 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_) {
     
     CHECK_CUDA(cudaStreamSynchronize(streams[i]));
   }
-  w_conv1 = new Tensor({256, 70, 7}, parameter_ + OFFSET0);
-  b_conv1 = new Tensor({256}, parameter_ + OFFSET1);
   gamma_conv1 = new Tensor({256, 1008}, parameter_ + OFFSET2);
   beta_conv1 = new Tensor({256, 1008}, parameter_ + OFFSET3);
-  w_conv2 = new Tensor({256, 256, 7}, parameter_ + OFFSET4);
-  b_conv2 = new Tensor({256}, parameter_ + OFFSET5);
-  w_conv3 = new Tensor({256, 256, 3}, parameter_ + OFFSET6);
-  b_conv3 = new Tensor({256}, parameter_ + OFFSET7);
-  w_conv4 = new Tensor({256, 256, 3}, parameter_ + OFFSET8);
-  b_conv4 = new Tensor({256}, parameter_ + OFFSET9);
-  w_conv5 = new Tensor({256, 256, 3}, parameter_ + OFFSET10);
-  b_conv5 = new Tensor({256}, parameter_ + OFFSET11);
-  w_conv6 = new Tensor({256, 256, 3}, parameter_ + OFFSET12);
-  b_conv6 = new Tensor({256}, parameter_ + OFFSET13);
   gamma_conv6 = new Tensor({256, 102}, parameter_ + OFFSET14);
   beta_conv6 = new Tensor({256, 102}, parameter_ + OFFSET15);
   w_fc1 = new Tensor({1024, 8704}, parameter_ + OFFSET16);
@@ -477,15 +457,8 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_) {
   a_layernorm1 = new Tensor({COMPUTE_BATCH_SIZE, 256, 1008});
   a_relu1 = new Tensor({COMPUTE_BATCH_SIZE, 256, 1008});
   a_pool1 = new Tensor({COMPUTE_BATCH_SIZE, 256, 336});
-  a_conv2 = new Tensor({COMPUTE_BATCH_SIZE, 256, 330});
   a_relu2 = new Tensor({COMPUTE_BATCH_SIZE, 256, 330});
   a_pool2 = new Tensor({COMPUTE_BATCH_SIZE, 256, 110});
-  a_conv3 = new Tensor({COMPUTE_BATCH_SIZE, 256, 108});
-  a_relu3 = new Tensor({COMPUTE_BATCH_SIZE, 256, 108});
-  a_conv4 = new Tensor({COMPUTE_BATCH_SIZE, 256, 106});
-  a_relu4 = new Tensor({COMPUTE_BATCH_SIZE, 256, 106});
-  a_conv5 = new Tensor({COMPUTE_BATCH_SIZE, 256, 104});
-  a_relu5 = new Tensor({COMPUTE_BATCH_SIZE, 256, 104});
   a_conv6 = new Tensor({COMPUTE_BATCH_SIZE, 256, 102});
   a_layernorm6 = new Tensor({COMPUTE_BATCH_SIZE, 256, 102});
   a_relu6 = new Tensor({COMPUTE_BATCH_SIZE, 256, 102});
@@ -502,12 +475,6 @@ ComputeEngine::~ComputeEngine() {
   pthread_mutex_destroy(&mutex_queue);
   pthread_cond_destroy(&cond_queue);
 
-  delete w_conv1; delete b_conv1;
-  delete w_conv2; delete b_conv2;
-  delete w_conv3; delete b_conv3;
-  delete w_conv4; delete b_conv4;
-  delete w_conv5; delete b_conv5;
-  delete w_conv6; delete b_conv6;
   delete w_fc1; delete b_fc1;
   delete w_fc2; delete b_fc2;
   delete w_fc3; delete b_fc3;
@@ -515,10 +482,7 @@ ComputeEngine::~ComputeEngine() {
   delete gamma_conv1; delete gamma_conv6;
   delete beta_conv1; delete beta_conv6;
   delete a_conv1; delete a_layernorm1; delete a_relu1; delete a_pool1;
-  delete a_conv2; delete a_relu2; delete a_pool2;
-  delete a_conv3; delete a_relu3;
-  delete a_conv4; delete a_relu4;
-  delete a_conv5; delete a_relu5;
+  delete a_relu2; delete a_pool2;
   delete a_conv6; delete a_layernorm6; delete a_relu6; delete a_pool6;
   delete a_collapse;
   delete a_linear1; delete a_relu7;
@@ -563,7 +527,7 @@ int ComputeEngine::pop() {
 void ComputeEngine::inference(int num_input) {
   DEBUG_PRINT("Inference %d\n", num_input);
 
-  int gpu_idx = 0;
+  CHECK_CUDA(cudaSetDevice(gpu_idx));
   
   for (int batch = 0; batch < num_input; batch+=COMPUTE_BATCH_SIZE) {
     DEBUG_PRINT("Inference %d/%d\n", num_input_processed+1, num_input);
@@ -612,7 +576,7 @@ void ComputeEngine::inference(int num_input) {
 
       dim3 grid(CEIL_DIV(256, C1D_K3_BM), CEIL_DIV(330, C1D_K3_BN));
       dim3 block(C1D_K3_BM, C1D_K3_BN);
-      conv1d_kernelfunc<<<grid, block, 0, streams[0]>>>(
+      conv1d_kernelfunc<<<grid, block, 0, streams[gpu_idx]>>>(
         a_pool1_gpu[gpu_idx], w_conv2_gpu[gpu_idx], b_conv2_gpu[gpu_idx], a_conv2_gpu[gpu_idx],
         now_batch_size, 330, 256, 256, 7,
         1
@@ -637,7 +601,7 @@ void ComputeEngine::inference(int num_input) {
 
       dim3 grid(CEIL_DIV(256, C1D_K3_BM), CEIL_DIV(108, C1D_K3_BN));
       dim3 block(C1D_K3_BM, C1D_K3_BN);
-      conv1d_kernelfunc<<<grid, block, 0, streams[0]>>>(
+      conv1d_kernelfunc<<<grid, block, 0, streams[gpu_idx]>>>(
         a_pool2_gpu[gpu_idx], w_conv3_gpu[gpu_idx], b_conv3_gpu[gpu_idx], a_conv3_gpu[gpu_idx],
         now_batch_size, 108, 256, 256, 3,
         1
@@ -650,7 +614,7 @@ void ComputeEngine::inference(int num_input) {
 
       dim3 grid(CEIL_DIV(256, C1D_K3_BM), CEIL_DIV(106, C1D_K3_BN));
       dim3 block(C1D_K3_BM, C1D_K3_BN);
-      conv1d_kernelfunc<<<grid, block, 0, streams[0]>>>(
+      conv1d_kernelfunc<<<grid, block, 0, streams[gpu_idx]>>>(
         a_conv3_gpu[gpu_idx], w_conv4_gpu[gpu_idx], b_conv4_gpu[gpu_idx], a_conv4_gpu[gpu_idx],
         now_batch_size, 106, 256, 256, 3,
         1
@@ -661,7 +625,7 @@ void ComputeEngine::inference(int num_input) {
     {
       dim3 grid(CEIL_DIV(256, C1D_K3_BM), CEIL_DIV(104, C1D_K3_BN));
       dim3 block(C1D_K3_BM, C1D_K3_BN);
-      conv1d_kernelfunc<<<grid, block, 0, streams[0]>>>(
+      conv1d_kernelfunc<<<grid, block, 0, streams[gpu_idx]>>>(
         a_conv4_gpu[gpu_idx], w_conv5_gpu[gpu_idx], b_conv5_gpu[gpu_idx], a_conv5_gpu[gpu_idx],
         now_batch_size, 104, 256, 256, 3,
         1
@@ -673,7 +637,7 @@ void ComputeEngine::inference(int num_input) {
     {
       dim3 grid(CEIL_DIV(256, C1D_K3_BM), CEIL_DIV(102, C1D_K3_BN));
       dim3 block(C1D_K3_BM, C1D_K3_BN);
-      conv1d_kernelfunc<<<grid, block, 0, streams[0]>>>(
+      conv1d_kernelfunc<<<grid, block, 0, streams[gpu_idx]>>>(
         a_conv5_gpu[gpu_idx], w_conv6_gpu[gpu_idx], b_conv6_gpu[gpu_idx], a_conv6_gpu[gpu_idx],
         now_batch_size, 102, 256, 256, 3,
         0
@@ -748,7 +712,8 @@ void initialize_classifier(float *parameter, int N) {
 
   MPI_Bcast(parameter, NUM_PARAMETER, MPI_FLOAT, 0, MPI_COMM_WORLD);
 
-  compute_engine = new ComputeEngine(parameter, N / mpi_size);
+  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx)
+    compute_engines[ce_idx] = new ComputeEngine(parameter, N / mpi_size / NGPU, ce_idx);
 }
 
 void classifier(float *input_, float *output_, int N) {
@@ -780,11 +745,16 @@ void classifier(float *input_, float *output_, int N) {
   
 
   // Compute
-  compute_engine->set_input(input_);
-  compute_engine->set_output(output_);
-  compute_engine->run();
-  compute_engine->push(N / mpi_size);
-  compute_engine->join();
+  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+    compute_engines[ce_idx]->set_input(input_ + ce_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH);
+    compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
+    compute_engines[ce_idx]->run();
+    compute_engines[ce_idx]->push(N / mpi_size / NGPU);
+  }
+
+  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+    compute_engines[ce_idx]->join();
+  }
 
   // Gather output
   if (iam_root) {
@@ -799,7 +769,7 @@ void classifier(float *input_, float *output_, int N) {
 }
 
 void finalize_classifier() {
-  if (mpi_rank == 0) {
-    delete compute_engine;
+  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+    delete compute_engines[ce_idx];
   }
 }
