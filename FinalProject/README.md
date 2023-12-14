@@ -10,6 +10,11 @@
 
 - [ ] Calculate each operators with CUDA: `conv1d`, `layernorm`, `relu`, `maxpool1d`, `linear`, etc.
     - [ ] Create CUDA version of each operators
+        - `conv1d`: Naive
+        - `layernorm`: None
+        - `relu`: None
+        - `maxpool1d`: None
+        - `linear`: None
     - [ ] Store most of intermediate features in global memory
 
 - [ ] Create weakly fused operators: `conv1d_relu`, `conv1d_stat`, `linear_relu`, etc.
@@ -23,6 +28,7 @@
 - Baseline: 2.12 input(s)/sec
 - Synchronous offload: 8.33 input(s)/sec
 - Naively batched computation: 7.86 input(s)/sec
+- Naive CUDA conv1d: 12.76 input(s)/sec
 
 ## Model Structure
 

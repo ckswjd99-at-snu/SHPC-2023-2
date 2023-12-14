@@ -9,21 +9,39 @@
 
 
 /** SECTION: Constants and hyperparameters **/
+#define CHECK_CUDA(call)                                              \
+  do {                                                                \
+    cudaError_t status_ = call;                                       \
+    if (status_ != cudaSuccess) {                                     \
+      fprintf(stderr, "CUDA error (%s:%d): %s\n", __FILE__, __LINE__, \
+              cudaGetErrorString(status_));                           \
+      exit(EXIT_FAILURE);                                             \
+    }                                                                 \
+  } while (0)
+
+#define CEIL_DIV(x, y) (((x) + (y)-1) / (y))
+
 #define NUM_PARAMETER (OFFSET21 + 4)
 #define POP_BATCH_SIZE 100
-#define COMPUTE_BATCH_SIZE 2
+#define COMPUTE_BATCH_SIZE 1
 
 static int mpi_size, mpi_rank;
 static char processor_name[MPI_MAX_PROCESSOR_NAME];
 static int iam_root;
 
 
+/** SECTION: GPU manipulation **/
+#define NGPU    4
+static cudaStream_t streams[NGPU];
+static float *a_input_gpu[NGPU], *w_conv1_gpu[NGPU], *b_conv1_gpu[NGPU], *a_conv1_gpu[NGPU];
+
+
 /** SECTION: DEBUGGING **/
 #define DEBUG 0
 #if DEBUG == 1
 #define DEBUG_PRINT(...) do { \
-  fprintf(stderr, "(%s|rank=%d) ", processor_name, mpi_rank); \
-  fprintf(stderr, __VA_ARGS__); \
+  printf("(%s|rank=%d) ", processor_name, mpi_rank); \
+  printf(__VA_ARGS__); \
 } while (0)
 #else
 #define DEBUG_PRINT(...)
@@ -83,6 +101,53 @@ void Tensor::fill_zeros() {
   for (int n = 0; n < N_; ++n) { buf[n] = 0.0; }
 }
 
+/** SECTION: Kernels **/
+
+#define KERNEL_SIZE_3 3
+#define KERNEL_SIZE_7 7
+#define C1D_K3_BM 32
+#define C1D_K3_BN 32
+#define C1D_K3_BK 32
+
+__global__ void conv1d_kernelfunc(
+  float *input, float *weight, float *bias, float *output,
+  int num_batch, int len_output, int in_channels, int out_channels, int kernel_size
+) {
+  /** PARAMS **/
+  // input: float[batch_size, in_channels, len_input]
+  // weight: float[out_channels, in_channels, kernel_size]
+  // bias: float[out_channels]
+  // output: float[batch_size, out_channels, len_output]
+
+  /** CONSTS **/
+  const int BLOCK_SIZE = C1D_K3_BM;
+  
+  /** VARS **/
+  int block_channel_idx = blockIdx.x * BLOCK_SIZE;
+  int block_output_idx = blockIdx.y * BLOCK_SIZE;
+  int block_channel_len = min(BLOCK_SIZE, out_channels - block_channel_idx);
+  int block_output_len = min(BLOCK_SIZE, len_output - block_output_idx);
+
+  int thread_channel_idx = block_channel_idx + threadIdx.x;
+  int thread_output_idx = block_output_idx + threadIdx.y;
+
+  int len_input = len_output + kernel_size - 1;
+
+  if (thread_output_idx < len_output) {
+    /** COMPUTE **/
+    float val = 0.0f;
+    for (int k = 0; k < in_channels; k++) {
+      float *input_ptr = &input[k * len_input + thread_output_idx];
+      float *weight_ptr = &weight[thread_channel_idx * in_channels * kernel_size + k * kernel_size];
+      for (int ks = 0; ks < kernel_size; ks++) {
+        val += weight_ptr[ks] * input_ptr[ks];
+      }
+    }
+
+    /** STORE **/
+    output[thread_channel_idx * len_output + thread_output_idx] = val + bias[thread_channel_idx];
+  }
+}
 
 /** SECTION: Operators **/
 void conv1d(Tensor *input, Tensor *weight, Tensor *bias, Tensor *output,
@@ -279,7 +344,31 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_) {
   pthread_mutex_init(&mutex_queue, NULL);
   pthread_cond_init(&cond_queue, NULL);
 
+  // Initialize CUDA
+  for (int i = 0; i < NGPU; ++i) {
+    CHECK_CUDA(cudaSetDevice(i));
+    CHECK_CUDA(cudaStreamCreate(&streams[i]));
+  }
+
   // Initialize parameters
+  for (int i = 0; i < NGPU; ++i) {
+    CHECK_CUDA(cudaSetDevice(i));
+    CHECK_CUDA(cudaMalloc(&a_input_gpu[i], COMPUTE_BATCH_SIZE * 70 * 1014 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&w_conv1_gpu[i], 256 * 70 * 7 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&b_conv1_gpu[i], 256 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&a_conv1_gpu[i], COMPUTE_BATCH_SIZE * 256 * 1008 * sizeof(float)));
+
+    CHECK_CUDA(cudaMemcpyAsync(
+      w_conv1_gpu[i], parameter_ + OFFSET0, 256 * 70 * 7 * sizeof(float),
+      cudaMemcpyHostToDevice, streams[i]
+    ));
+    CHECK_CUDA(cudaMemcpyAsync(
+      b_conv1_gpu[i], parameter_ + OFFSET1, 256 * sizeof(float),
+      cudaMemcpyHostToDevice, streams[i]
+    ));
+
+    CHECK_CUDA(cudaStreamSynchronize(streams[i]));
+  }
   w_conv1 = new Tensor({256, 70, 7}, parameter_ + OFFSET0);
   b_conv1 = new Tensor({256}, parameter_ + OFFSET1);
   gamma_conv1 = new Tensor({256, 1008}, parameter_ + OFFSET2);
@@ -405,7 +494,28 @@ void ComputeEngine::inference(int num_input) {
     );
 
     // Conv block 1 : Conv1d + LayerNorm + ReLU + MaxPool1d
-    conv1d(input, w_conv1, b_conv1, a_conv1, 1, 0, 1, true);
+    // conv1d(input, w_conv1, b_conv1, a_conv1, 1, 0, 1, true);
+
+    // do conv using only the first GPU
+    CHECK_CUDA(cudaMemcpyAsync(
+      a_input_gpu[0], input->buf, now_batch_size * 70 * 1014 * sizeof(float),
+      cudaMemcpyHostToDevice, streams[0]
+    ));
+
+    dim3 grid(CEIL_DIV(256, C1D_K3_BM), CEIL_DIV(1008, C1D_K3_BN));
+    dim3 block(C1D_K3_BM, C1D_K3_BN);
+    conv1d_kernelfunc<<<grid, block, 0, streams[0]>>>(
+      a_input_gpu[0], w_conv1_gpu[0], b_conv1_gpu[0], a_conv1_gpu[0],
+      now_batch_size, 1008, 70, 256, 7
+    );
+
+    CHECK_CUDA(cudaMemcpyAsync(
+      a_conv1->buf, a_conv1_gpu[0], now_batch_size * 256 * 1008 * sizeof(float),
+      cudaMemcpyDeviceToHost, streams[0]
+    ));
+
+    CHECK_CUDA(cudaStreamSynchronize(streams[0]));
+
     layernorm(a_conv1, gamma_conv1, beta_conv1, a_layernorm1);
     relu(a_layernorm1, a_relu1);
     maxpool1d(a_relu1, a_pool1, 3, 3);
