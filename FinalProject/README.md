@@ -14,11 +14,12 @@
         - `layernorm`: None
         - `relu`: None
         - `maxpool1d`: None
-        - `linear`: None
+        - `linear`: Naive
     - [ ] Store most of intermediate features in global memory
 
 - [ ] Create weakly fused operators: `conv1d_relu`, `conv1d_stat`, `linear_relu`, etc.
     - [x] `conv1d_relu`: integrated into `conv1d`.
+    - [x] `linear_relu`: integrated into `linear`.
 
 - [ ] Create strongly fused operators
     - [ ] `layernorm_relu_maxpool1d` (Conv block 1(back), Conv block 6(back))
@@ -32,6 +33,7 @@
 - Naive CUDA conv1d: 12.76 input(s)/sec
 - Replace every conv1d with conv1d_kernel, fuse relu: 165.00 input(s)/sec
 - Use multiple GPUs: 555.00 input(s)/sec
+- Naive CUDA linear: 727.20 input(s)/sec
 
 ## Model Structure
 
