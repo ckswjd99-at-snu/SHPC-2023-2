@@ -10,7 +10,7 @@
 
 - [ ] Calculate each operators with CUDA: `conv1d`, `layernorm`, `relu`, `maxpool1d`, `linear`, etc.
     - [ ] Create CUDA version of each operators
-        - `conv1d`: Square blocking
+        - `conv1d`: Rectangular blocking
         - `layernorm`: None
         - `relu`: None
         - `maxpool1d`: None
@@ -37,6 +37,8 @@
 - Replace every linear with linear_cuda, fuse relu: 1152.75 input(s)/sec
 - Merged maxpool1d and relu: 1290.74 input(s)/sec
 - conv1d_k3 square blocking: 1505.14 input(s)/sec
+- conv1d_k3 rectangular blocking: 1550.79 input(s)/sec
+- conv1d hyperparameter tuning: 2537.34 input(s)/sec
 
 ## Model Structure
 
