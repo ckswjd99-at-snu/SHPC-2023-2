@@ -10,14 +10,14 @@
 
 - [ ] Calculate each operators with CUDA: `conv1d`, `layernorm`, `relu`, `maxpool1d`, `linear`, etc.
     - [ ] Create CUDA version of each operators
-        - `conv1d`: Naive
+        - `conv1d`: Square blocking
         - `layernorm`: None
         - `relu`: None
         - `maxpool1d`: None
         - `linear`: Naive
     - [ ] Store most of intermediate features in global memory
 
-- [ ] Create weakly fused operators: `conv1d_relu`, `conv1d_stat`, `linear_relu`, etc.
+- [x] Create weakly fused operators: `conv1d_relu`, `conv1d_stat`, `linear_relu`, etc.
     - [x] `conv1d_relu`: integrated into `conv1d`.
     - [x] `linear_relu`: integrated into `linear`.
 
@@ -36,6 +36,7 @@
 - Naive CUDA linear: 727.20 input(s)/sec
 - Replace every linear with linear_cuda, fuse relu: 1152.75 input(s)/sec
 - Merged maxpool1d and relu: 1290.74 input(s)/sec
+- conv1d_k3 square blocking: 1505.14 input(s)/sec
 
 ## Model Structure
 
