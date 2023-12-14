@@ -31,9 +31,10 @@
 - Synchronous offload: 8.33 input(s)/sec
 - Naively batched computation: 7.86 input(s)/sec
 - Naive CUDA conv1d: 12.76 input(s)/sec
-- Replace every conv1d with conv1d_kernel, fuse relu: 165.00 input(s)/sec
+- Replace every conv1d with conv1d_cuda, fuse relu: 165.00 input(s)/sec
 - Use multiple GPUs: 555.00 input(s)/sec
 - Naive CUDA linear: 727.20 input(s)/sec
+- Replace every linear with linear_cuda, fust relu: 1152.75 input(s)/sec
 
 ## Model Structure
 
