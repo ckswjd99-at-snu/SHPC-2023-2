@@ -214,16 +214,8 @@ static __global__ void linear_cuda(
 
 
 /** SECTION: Operators **/
-void relu(Tensor *input, Tensor *output) {
-  for (int i = 0; i < input->num_elem(); ++i) {
-    if (input->buf[i] > 0.0f)
-      output->buf[i] = input->buf[i];
-    else
-      output->buf[i] = 0.0f;
-  }
-}
 
-void maxpool1d(Tensor *input, Tensor *output, int kernel_size, int stride) {
+void maxpool1d(Tensor *input, Tensor *output, int kernel_size, int stride, int relu) {
   int B = input->shape[0];
   int IL = input->shape[2];
   int OC = output->shape[1];
@@ -240,6 +232,7 @@ void maxpool1d(Tensor *input, Tensor *output, int kernel_size, int stride) {
           float val = input->buf[batch * single_input_size + oc * IL + ks + ol * stride];
           if (val > mx) mx = val;
         }
+        if (relu && mx < 0.0f) mx = 0.0f;
         output->buf[batch * single_output_size + oc * OL + ol] = mx;
       }
     }
@@ -598,8 +591,7 @@ void ComputeEngine::inference(int num_input) {
       CHECK_CUDA(cudaStreamSynchronize(streams[gpu_idx]));
       
       layernorm(a_conv1, gamma_conv1, beta_conv1, a_layernorm1);
-      relu(a_layernorm1, a_relu1);
-      maxpool1d(a_relu1, a_pool1, 3, 3);
+      maxpool1d(a_layernorm1, a_pool1, 3, 3, 1);
     }
 
     // Conv block 2 : Conv1d + ReLU + MaxPool1d
@@ -624,7 +616,7 @@ void ComputeEngine::inference(int num_input) {
 
       CHECK_CUDA(cudaStreamSynchronize(streams[gpu_idx]));
 
-      maxpool1d(a_relu2, a_pool2, 3, 3);
+      maxpool1d(a_relu2, a_pool2, 3, 3, 0);
     }
 
     // Conv block 3 : Conv1d + ReLU
@@ -686,8 +678,7 @@ void ComputeEngine::inference(int num_input) {
       CHECK_CUDA(cudaStreamSynchronize(streams[gpu_idx]));
     }
     layernorm(a_conv6, gamma_conv6, beta_conv6, a_layernorm6);
-    relu(a_layernorm6, a_relu6);
-    maxpool1d(a_relu6, a_pool6, 3, 3);
+    maxpool1d(a_layernorm6, a_pool6, 3, 3, 1);
 
     // FC block 1 : Linear + ReLU
     {
