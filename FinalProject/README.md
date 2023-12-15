@@ -56,6 +56,7 @@ Measured by annotating code sections.
 - conv1d_k3 rectangular blocking: 1550.79 input(s)/sec
 - conv1d hyperparameter tuning: 2537.34 input(s)/sec
 - conv1d_k7 rectangular blocking: 3013.50 input(s)/sec
+- batched processing: 3501.90 input(s)/sec
 
 ## Model Structure
 

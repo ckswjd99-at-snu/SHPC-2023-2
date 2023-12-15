@@ -22,8 +22,6 @@
 #define CEIL_DIV(x, y) (((x) + (y)-1) / (y))
 
 #define NUM_PARAMETER (OFFSET21 + 4)
-#define POP_BATCH_SIZE 16
-#define COMPUTE_BATCH_SIZE 1
 
 static int mpi_size, mpi_rank;
 static char processor_name[MPI_MAX_PROCESSOR_NAME];
@@ -75,6 +73,19 @@ int checksum(float *buf, int N) {
 }
 
 
+/** SECTION: Hyperparams **/
+#define POP_BATCH_SIZE 16
+#define COMPUTE_BATCH_SIZE 4
+
+#define C1D_K3_BM 16
+#define C1D_K3_BN 8
+#define C1D_K3_BK 8
+
+#define C1D_K7_BM 8
+#define C1D_K7_BN 16
+#define C1D_K7_BK 4
+
+
 /** SECTION: Tensor **/
 
 // Multi-dimensional matrix containing fp32 elements
@@ -122,16 +133,6 @@ void Tensor::fill_zeros() {
 
 /** SECTION: Kernels **/
 
-#define KERNEL_SIZE_3 3
-#define KERNEL_SIZE_7 7
-#define C1D_K3_BM 16
-#define C1D_K3_BN 16
-#define C1D_K3_BK 8
-#define C1D_K7_BM 16
-#define C1D_K7_BN 16
-#define C1D_K7_BK 4
-#define C1D_SQB   8
-
 static __global__ void conv1d_k3_cuda(
   float *input, float *weight, float *bias, float *output,
   int num_batch, int len_output, int in_channels, int out_channels,
@@ -144,12 +145,15 @@ static __global__ void conv1d_k3_cuda(
   // output: float[batch_size, out_channels, len_output]
 
   /** CONSTS **/
+  const int BB = COMPUTE_BATCH_SIZE;
   const int BM = C1D_K3_BM;
   const int BN = C1D_K3_BN;
   const int BK = C1D_K3_BK;
 
-  const int KERNEL_SIZE = KERNEL_SIZE_3;
+  const int KERNEL_SIZE = 3;
   const int len_input = len_output + KERNEL_SIZE - 1;
+  const int single_input_size = in_channels * len_input;
+  const int single_output_size = out_channels * len_output;
 
   /** ASSERTION **/
   #if DEBUG == 1
@@ -162,7 +166,7 @@ static __global__ void conv1d_k3_cuda(
   #endif
   
   /** VARS **/
-  float val = 0.0f;
+  float val[BB] = {0.0f};
   
   // output block
   int oblock_m_offset = blockIdx.x * BM;
@@ -175,7 +179,7 @@ static __global__ void conv1d_k3_cuda(
   int othread_valid = othread_m_offset < len_oblock_m;
   
   /** SMEM **/
-  __shared__ float input_buf[BK][BN + KERNEL_SIZE - 1];
+  __shared__ float input_buf[BB][BK][BN + KERNEL_SIZE - 1];
   __shared__ float weight_buf[BM][BK][KERNEL_SIZE];
 
   /** LOOP OVER K **/
@@ -191,9 +195,13 @@ static __global__ void conv1d_k3_cuda(
     int ithread_valid = ithread_k_offset < len_iblock_k;
 
     if (ithread_valid) {
-      input_buf[ithread_k_offset][ithread_n_offset] = input[
-        (iblock_k_offset + ithread_k_offset) * len_input + iblock_n_offset + ithread_n_offset
-      ];
+      for (int bb = 0; bb < num_batch; bb++) {
+        input_buf[bb][ithread_k_offset][ithread_n_offset] = input[
+          bb * single_input_size
+           + (iblock_k_offset + ithread_k_offset) * len_input
+           + iblock_n_offset + ithread_n_offset
+        ];
+      }
     }
 
     // load weight
@@ -219,9 +227,11 @@ static __global__ void conv1d_k3_cuda(
 
     // compute
     if (othread_valid) {
-      for (int k = 0; k < BK; k++) {
-        for (int ks = 0; ks < KERNEL_SIZE; ks++) {
-          val += weight_buf[othread_m_offset][k][ks] * input_buf[k][othread_n_offset + ks];
+      for (int bb = 0; bb < num_batch; bb++) {
+        for (int k = 0; k < BK; k++) {
+          for (int ks = 0; ks < KERNEL_SIZE; ks++) {
+            val[bb] += weight_buf[othread_m_offset][k][ks] * input_buf[bb][k][othread_n_offset + ks];
+          }
         }
       }
     }
@@ -231,9 +241,15 @@ static __global__ void conv1d_k3_cuda(
 
   /** STORE **/
   if (othread_valid) {
-    val += bias[oblock_m_offset + othread_m_offset];
-    if (relu && val < 0.0f) val = 0.0f;
-    output[(oblock_m_offset + othread_m_offset) * len_output + oblock_n_offset + othread_n_offset] = val;
+    for (int bb = 0; bb < num_batch; bb++) {
+      val[bb] += bias[oblock_m_offset + othread_m_offset];
+      if (relu && val[bb] < 0.0f) val[bb] = 0.0f;
+      output[
+        bb * single_output_size
+         + (oblock_m_offset + othread_m_offset) * len_output
+         + oblock_n_offset + othread_n_offset
+      ] = val[bb];
+    }
   }
 }
 
@@ -249,12 +265,16 @@ static __global__ void conv1d_k7_cuda(
   // output: float[batch_size, out_channels, len_output]
 
   /** CONSTS **/
+  const int BB = COMPUTE_BATCH_SIZE;
   const int BM = C1D_K7_BM;
   const int BN = C1D_K7_BN;
   const int BK = C1D_K7_BK;
 
-  const int KERNEL_SIZE = KERNEL_SIZE_7;
+  const int KERNEL_SIZE = 7;
   const int len_input = len_output + KERNEL_SIZE - 1;
+
+  const int single_input_size = in_channels * len_input;
+  const int single_output_size = out_channels * len_output;
 
   /** ASSERTION **/
   #if DEBUG == 1
@@ -267,7 +287,7 @@ static __global__ void conv1d_k7_cuda(
   #endif
   
   /** VARS **/
-  float val = 0.0f;
+  float val[BB] = {0.0f};
   
   // output block
   int oblock_m_offset = blockIdx.x * BM;
@@ -280,7 +300,7 @@ static __global__ void conv1d_k7_cuda(
   int othread_valid = othread_m_offset < len_oblock_m;
   
   /** SMEM **/
-  __shared__ float input_buf[BK][BN + KERNEL_SIZE - 1];
+  __shared__ float input_buf[BB][BK][BN + KERNEL_SIZE - 1];
   __shared__ float weight_buf[BM][BK][KERNEL_SIZE];
 
   /** LOOP OVER K **/
@@ -296,9 +316,13 @@ static __global__ void conv1d_k7_cuda(
     int ithread_valid = ithread_k_offset < len_iblock_k;
 
     if (ithread_valid) {
-      input_buf[ithread_k_offset][ithread_n_offset] = input[
-        (iblock_k_offset + ithread_k_offset) * len_input + iblock_n_offset + ithread_n_offset
-      ];
+      for (int bb = 0; bb < num_batch; bb++) {
+        input_buf[bb][ithread_k_offset][ithread_n_offset] = input[
+          bb * single_input_size
+           + (iblock_k_offset + ithread_k_offset) * len_input
+           + iblock_n_offset + ithread_n_offset
+        ];
+      }
     }
 
     // load weight
@@ -324,9 +348,11 @@ static __global__ void conv1d_k7_cuda(
 
     // compute
     if (othread_valid) {
-      for (int k = 0; k < BK; k++) {
-        for (int ks = 0; ks < KERNEL_SIZE; ks++) {
-          val += weight_buf[othread_m_offset][k][ks] * input_buf[k][othread_n_offset + ks];
+      for (int bb = 0; bb < num_batch; bb++) {
+        for (int k = 0; k < BK; k++) {
+          for (int ks = 0; ks < KERNEL_SIZE; ks++) {
+            val[bb] += weight_buf[othread_m_offset][k][ks] * input_buf[bb][k][othread_n_offset + ks];
+          }
         }
       }
     }
@@ -336,52 +362,15 @@ static __global__ void conv1d_k7_cuda(
 
   /** STORE **/
   if (othread_valid) {
-    val += bias[oblock_m_offset + othread_m_offset];
-    if (relu && val < 0.0f) val = 0.0f;
-    output[(oblock_m_offset + othread_m_offset) * len_output + oblock_n_offset + othread_n_offset] = val;
-  }
-}
-
-static __global__ void conv1d_cuda(
-  float *input, float *weight, float *bias, float *output,
-  int num_batch, int len_output, int in_channels, int out_channels, int kernel_size,
-  int relu
-) {
-  /** PARAMS **/
-  // input: float[batch_size, in_channels, len_input]
-  // weight: float[out_channels, in_channels, kernel_size]
-  // bias: float[out_channels]
-  // output: float[batch_size, out_channels, len_output]
-
-  /** CONSTS **/
-  const int BLOCK_SIZE = C1D_SQB;
-  
-  /** VARS **/
-  int block_channel_idx = blockIdx.x * BLOCK_SIZE;
-  int block_output_idx = blockIdx.y * BLOCK_SIZE;
-  int block_channel_len = min(BLOCK_SIZE, out_channels - block_channel_idx);
-  int block_output_len = min(BLOCK_SIZE, len_output - block_output_idx);
-
-  int thread_channel_idx = block_channel_idx + threadIdx.x;
-  int thread_output_idx = block_output_idx + threadIdx.y;
-
-  int len_input = len_output + kernel_size - 1;
-
-  if (thread_output_idx < len_output) {
-    /** COMPUTE **/
-    float val = 0.0f;
-    for (int k = 0; k < in_channels; k++) {
-      float *input_ptr = &input[k * len_input + thread_output_idx];
-      float *weight_ptr = &weight[thread_channel_idx * in_channels * kernel_size + k * kernel_size];
-      for (int ks = 0; ks < kernel_size; ks++) {
-        val += weight_ptr[ks] * input_ptr[ks];
-      }
+    for (int bb = 0; bb < num_batch; bb++) {
+      val[bb] += bias[oblock_m_offset + othread_m_offset];
+      if (relu && val[bb] < 0.0f) val[bb] = 0.0f;
+      output[
+        bb * single_output_size
+         + (oblock_m_offset + othread_m_offset) * len_output
+         + oblock_n_offset + othread_n_offset
+      ] = val[bb];
     }
-
-    /** STORE **/
-    val += bias[thread_channel_idx];
-    if (relu && val < 0.0f) val = 0.0f;
-    output[thread_channel_idx * len_output + thread_output_idx] = val;
   }
 }
 
