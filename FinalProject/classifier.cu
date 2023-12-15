@@ -74,6 +74,9 @@ int checksum(float *buf, int N) {
 
 
 /** SECTION: Hyperparams **/
+#define ROOT_INPUT_N    (2048 + 256 * 3)
+#define NONROOT_INPUT_N (2048 - 256)
+
 #define POP_BATCH_SIZE 16
 #define COMPUTE_BATCH_SIZE 4
 
@@ -1022,33 +1025,53 @@ void initialize_classifier(float *parameter, int N) {
     compute_engines[ce_idx] = new ComputeEngine(parameter, N / mpi_size / NGPU, ce_idx);
 }
 
-void classifier(float *input_, float *output_, int N) {
+void classifier_root(float *input_, float *output_, int N) {
   // Scatter input & initialize memory
   DEBUG_PRINT("Scatter input\n");
-  if (iam_root) {
-    MPI_Scatter(
-      input_, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT,
-      MPI_IN_PLACE, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT, 
-      0, MPI_COMM_WORLD
-    );
-  }
-  else {
-    if (input_ == nullptr) 
-      input_ = (float *) calloc(
-        N * VOCAB_SIZE * MAX_LENGTH / mpi_size, 
-        sizeof(float)
-      );
-    if (output_ == nullptr) 
-      output_ = (float *) calloc(N / mpi_size, sizeof(float));
-
-    MPI_Scatter(
-      MPI_IN_PLACE, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT,
-      input_, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT, 
-      0, MPI_COMM_WORLD
-    );
-  }
+  MPI_Scatter(
+    input_, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT,
+    MPI_IN_PLACE, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT, 
+    0, MPI_COMM_WORLD
+  );
   DEBUG_PRINT("Scatter input done\n");
   
+  // Compute
+  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+    compute_engines[ce_idx]->set_input(input_ + ce_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH);
+    compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
+    compute_engines[ce_idx]->run();
+    compute_engines[ce_idx]->push(N / mpi_size / NGPU);
+  }
+
+  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+    compute_engines[ce_idx]->join();
+  }
+
+  // Gather output
+  MPI_Gather(
+    MPI_IN_PLACE, N / mpi_size, MPI_FLOAT,
+    output_, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD
+  );
+
+}
+
+void classifier_nonroot(float *input_, float *output_, int N) {
+  // Scatter input & initialize memory
+  DEBUG_PRINT("Scatter input\n");
+  if (input_ == nullptr) 
+    input_ = (float *) calloc(
+      N * VOCAB_SIZE * MAX_LENGTH / mpi_size, 
+      sizeof(float)
+    );
+  if (output_ == nullptr) 
+    output_ = (float *) calloc(N / mpi_size, sizeof(float));
+
+  MPI_Scatter(
+    MPI_IN_PLACE, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT,
+    input_, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT, 
+    0, MPI_COMM_WORLD
+  );
+  DEBUG_PRINT("Scatter input done\n");
 
   // Compute
   for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
@@ -1063,14 +1086,15 @@ void classifier(float *input_, float *output_, int N) {
   }
 
   // Gather output
-  if (iam_root) {
-    MPI_Gather(MPI_IN_PLACE, N / mpi_size, MPI_FLOAT,
-               output_, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
-  }
-  else {
-    MPI_Gather(output_, N / mpi_size, MPI_FLOAT,
-               MPI_IN_PLACE, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD);
-  }
+  MPI_Gather(
+    output_, N / mpi_size, MPI_FLOAT,
+    MPI_IN_PLACE, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD
+  );
+}
+
+void classifier(float *input_, float *output_, int N) {
+  if (iam_root) classifier_root(input_, output_, N);
+  else classifier_nonroot(input_, output_, N);
 
 }
 
