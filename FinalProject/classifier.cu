@@ -85,6 +85,10 @@ int checksum(float *buf, int N) {
 #define C1D_K7_BN 16
 #define C1D_K7_BK 4
 
+#define LIN_BM 4
+#define LIN_BN 32
+#define LIN_BK 32
+
 
 /** SECTION: Tensor **/
 
@@ -374,10 +378,6 @@ static __global__ void conv1d_k7_cuda(
   }
 }
 
-#define LIN_BM 32
-#define LIN_BN 32
-#define LIN_BK 32
-
 static __global__ void linear_cuda(
   float *input, float *weight, float *bias, float *output,
   int num_batch, int in_channels, int out_channels,
@@ -390,18 +390,19 @@ static __global__ void linear_cuda(
   // output: float[batch_size, out_channels]
 
   /** CONSTS **/
-  const int BLOCK_SIZE = LIN_BM;
+  const int BM = LIN_BM;
+  const int BN = LIN_BN;
 
   /** VARS **/
-  int block_batch_idx = blockIdx.x * BLOCK_SIZE;
-  int block_outchan_idx = blockIdx.y * BLOCK_SIZE;
-  int block_batch_len = min(BLOCK_SIZE, num_batch - block_batch_idx);
-  int block_outchan_len = min(BLOCK_SIZE, out_channels - block_outchan_idx);
+  int block_batch_idx = blockIdx.x * BM;
+  int block_outchan_idx = blockIdx.y * BN;
+  int block_batch_len = min(BM, num_batch - block_batch_idx);
+  int block_outchan_len = min(BN, out_channels - block_outchan_idx);
 
   int thread_batch_idx = block_batch_idx + threadIdx.x;
   int thread_outchan_idx = block_outchan_idx + threadIdx.y;
 
-  if (thread_outchan_idx < out_channels && thread_batch_idx < num_batch) {
+  if (thread_batch_idx < num_batch && thread_outchan_idx < out_channels) {
     /** COMPUTE **/
     float val = 0.0f;
     for (int k = 0; k < in_channels; k++) {
