@@ -58,6 +58,7 @@ Measured by annotating code sections.
 - conv1d_k7 rectangular blocking: 3013.50 input(s)/sec
 - batched processing: 3501.90 input(s)/sec
 - linear rectangular: 3644.37 input(s)/sec
+- linear rect blocking: 3641.82 input(s)/sec
 
 ## Model Structure
 

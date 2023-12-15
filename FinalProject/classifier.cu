@@ -85,9 +85,12 @@ int checksum(float *buf, int N) {
 #define C1D_K7_BN 16
 #define C1D_K7_BK 4
 
-#define LIN_BM 4
-#define LIN_BN 32
-#define LIN_BK 32
+#define LIN_NAIVE_BM 4
+#define LIN_NAIVE_BN 16
+
+#define LIN_REG_BM 4
+#define LIN_REG_BN 16
+#define LIN_REG_BK 32
 
 
 /** SECTION: Tensor **/
@@ -378,7 +381,7 @@ static __global__ void conv1d_k7_cuda(
   }
 }
 
-static __global__ void linear_cuda(
+static __global__ void linear_naive_cuda(
   float *input, float *weight, float *bias, float *output,
   int num_batch, int in_channels, int out_channels,
   int relu
@@ -390,8 +393,8 @@ static __global__ void linear_cuda(
   // output: float[batch_size, out_channels]
 
   /** CONSTS **/
-  const int BM = LIN_BM;
-  const int BN = LIN_BN;
+  const int BM = LIN_NAIVE_BM;
+  const int BN = LIN_NAIVE_BN;
 
   /** VARS **/
   int block_batch_idx = blockIdx.x * BM;
@@ -414,6 +417,69 @@ static __global__ void linear_cuda(
     if (relu && val < 0.0f) val = 0.0f;
     output[thread_batch_idx * out_channels + thread_outchan_idx] = val;
   }
+}
+
+static __global__ void linear_reg_cuda(
+  float *input, float *weight, float *bias, float *output,
+  int num_batch, int in_channels, int out_channels,
+  int relu
+) {
+  /** PARAMS **/
+  // input: float[batch_size, in_channels]
+  // weight: float[out_channels, in_channels]
+  // bias: float[out_channels]
+  // output: float[batch_size, out_channels]
+
+  /** CONSTS **/
+  const int BM = LIN_REG_BM;
+  const int BN = LIN_REG_BN;
+  const int BK = LIN_REG_BK;
+  const int LDPT_INPUT = BK / BN;
+  const int LDPT_WEIGHT = BK / BM;
+
+  /** VARS **/
+  float val = 0.0f;
+
+  int oblock_m = blockIdx.x * BM;
+  int oblock_n = blockIdx.y * BN;
+
+  /** SMEM **/
+  __shared__ float input_buf[BM][BK];
+  __shared__ float weight_buf[BK][BN];
+
+  /** LOOP OVER K **/
+  for (int bk = 0; bk < in_channels; bk += BK) {
+    // load input
+    for (int ld_input = 0; ld_input < LDPT_INPUT; ld_input++) {
+      input_buf[threadIdx.x][threadIdx.y * LDPT_INPUT + ld_input] = input[
+        in_channels * (oblock_m + threadIdx.x)
+        + bk + threadIdx.y * LDPT_INPUT + ld_input
+      ];
+    }
+
+    // load weight
+    for (int ld_weight = 0; ld_weight < LDPT_WEIGHT; ld_weight++) {
+      weight_buf[threadIdx.x * LDPT_WEIGHT + ld_weight][threadIdx.y] = weight[
+        in_channels * (oblock_n + threadIdx.y)
+        + bk + threadIdx.x * LDPT_WEIGHT + ld_weight
+      ];
+    }
+
+    __syncthreads();
+
+    // compute
+    for (int k = 0; k < BK; k++) {
+      val += weight_buf[k][threadIdx.y] * input_buf[threadIdx.x][k];
+    }
+
+    __syncthreads();
+  }
+
+  /** STORE **/
+  val += bias[oblock_n + threadIdx.y];
+  if (relu && val < 0.0f) val = 0.0f;
+  output[out_channels * (oblock_m + threadIdx.x) + oblock_n + threadIdx.y] = val;
+
 }
 
 
@@ -446,27 +512,6 @@ void maxpool1d(Tensor *input, Tensor *output, int kernel_size, int stride, int r
 void collapse(Tensor *input, Tensor *output) {
   for (int i = 0; i < input->num_elem(); ++i) {
     output->buf[i] = input->buf[i];
-  }
-}
-
-void linear(Tensor *input, Tensor *weight, Tensor *bias, Tensor *output,
-            bool has_bias) {
-  int B = input->shape[0];
-  int IC = input->shape[1];
-  int OC = output->shape[1];
-
-  int single_input_size = input->num_elem() / B;
-  int single_output_size = output->num_elem() / B;
-
-  for (int batch = 0; batch < B; batch++) {
-    for (int oc = 0; oc < OC; ++oc) {
-      float val = 0.0;
-      for (int ic = 0; ic < IC; ++ic) {
-        val += input->buf[batch * single_input_size + ic] * weight->buf[oc * IC + ic];
-      }
-      if (has_bias) val += bias->buf[oc];
-      output->buf[batch * single_output_size + oc] = val;
-    }
   }
 }
 
@@ -891,9 +936,9 @@ void ComputeEngine::inference(int num_input) {
         cudaMemcpyHostToDevice, streams[gpu_idx]
       ));
 
-      dim3 grid(CEIL_DIV(now_batch_size, LIN_BM), CEIL_DIV(1024, LIN_BN));
-      dim3 block(LIN_BM, LIN_BN);
-      linear_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
+      dim3 grid(CEIL_DIV(now_batch_size, LIN_REG_BM), CEIL_DIV(1024, LIN_REG_BN));
+      dim3 block(LIN_REG_BM, LIN_REG_BN);
+      linear_reg_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
         a_collapse_gpu[gpu_idx], w_fc1_gpu[gpu_idx], b_fc1_gpu[gpu_idx], a_linear1_gpu[gpu_idx],
         now_batch_size, 8704, 1024,
         1
@@ -902,9 +947,9 @@ void ComputeEngine::inference(int num_input) {
 
     // FC block 2 : Linear + ReLU
     {
-      dim3 grid(CEIL_DIV(now_batch_size, LIN_BM), CEIL_DIV(1024, LIN_BN));
-      dim3 block(LIN_BM, LIN_BN);
-      linear_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
+      dim3 grid(CEIL_DIV(now_batch_size, LIN_REG_BM), CEIL_DIV(1024, LIN_REG_BN));
+      dim3 block(LIN_REG_BM, LIN_REG_BN);
+      linear_reg_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
         a_linear1_gpu[gpu_idx], w_fc2_gpu[gpu_idx], b_fc2_gpu[gpu_idx], a_linear2_gpu[gpu_idx],
         now_batch_size, 1024, 1024,
         1
@@ -913,9 +958,9 @@ void ComputeEngine::inference(int num_input) {
 
     // FC block 3 : Linear
     {
-      dim3 grid(CEIL_DIV(now_batch_size, LIN_BM), CEIL_DIV(4, LIN_BN));
-      dim3 block(LIN_BM, LIN_BN);
-      linear_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
+      dim3 grid(CEIL_DIV(now_batch_size, LIN_NAIVE_BM), CEIL_DIV(4, LIN_NAIVE_BN));
+      dim3 block(LIN_NAIVE_BM, LIN_NAIVE_BN);
+      linear_naive_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
         a_linear2_gpu[gpu_idx], w_fc3_gpu[gpu_idx], b_fc3_gpu[gpu_idx], a_linear3_gpu[gpu_idx],
         now_batch_size, 1024, 4,
         0
