@@ -127,6 +127,9 @@ void Tensor::fill_zeros() {
 #define C1D_K3_BM 16
 #define C1D_K3_BN 16
 #define C1D_K3_BK 8
+#define C1D_K7_BM 16
+#define C1D_K7_BN 16
+#define C1D_K7_BK 4
 #define C1D_SQB   8
 
 static __global__ void conv1d_k3_cuda(
@@ -146,6 +149,111 @@ static __global__ void conv1d_k3_cuda(
   const int BK = C1D_K3_BK;
 
   const int KERNEL_SIZE = KERNEL_SIZE_3;
+  const int len_input = len_output + KERNEL_SIZE - 1;
+
+  /** ASSERTION **/
+  #if DEBUG == 1
+  if (BM * BN < BM * BK * KERNEL_SIZE) {
+    if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0) {
+      printf("conv1d_k3_cuda: num of threads are insufficient for kernel load!\n");
+      return;
+    }
+  }
+  #endif
+  
+  /** VARS **/
+  float val = 0.0f;
+  
+  // output block
+  int oblock_m_offset = blockIdx.x * BM;
+  int oblock_n_offset = blockIdx.y * BN;
+  int len_oblock_m = min(BM, out_channels - oblock_m_offset);
+  int len_oblock_n = min(BN, len_output - oblock_n_offset);
+  int othread_m_offset = threadIdx.x / len_oblock_n;
+  int othread_n_offset = threadIdx.x % len_oblock_n;
+
+  int othread_valid = othread_m_offset < len_oblock_m;
+  
+  /** SMEM **/
+  __shared__ float input_buf[BK][BN + KERNEL_SIZE - 1];
+  __shared__ float weight_buf[BM][BK][KERNEL_SIZE];
+
+  /** LOOP OVER K **/
+  for (int bk = 0; bk < in_channels; bk += BK) {
+    // load input
+    int iblock_k_offset = bk;
+    int iblock_n_offset = oblock_n_offset;
+    int len_iblock_k = min(BK, in_channels - iblock_k_offset);
+    int len_iblock_n = min(BN + KERNEL_SIZE - 1, len_input - iblock_n_offset);
+    int ithread_k_offset = threadIdx.x / len_iblock_n;
+    int ithread_n_offset = threadIdx.x % len_iblock_n;
+
+    int ithread_valid = ithread_k_offset < len_iblock_k;
+
+    if (ithread_valid) {
+      input_buf[ithread_k_offset][ithread_n_offset] = input[
+        (iblock_k_offset + ithread_k_offset) * len_input + iblock_n_offset + ithread_n_offset
+      ];
+    }
+
+    // load weight
+    int wblock_m_offset = oblock_m_offset;
+    int wblock_k_offset = bk;
+    int len_wblock_m = min(BM, out_channels - wblock_m_offset);
+    int len_wblock_k = min(BK, in_channels - wblock_k_offset);
+    int wthread_m_offset = threadIdx.x / len_wblock_k;
+    int wthread_k_offset = threadIdx.x % len_wblock_k;
+
+    int wthread_valid = wthread_m_offset < len_wblock_m;
+
+    if (wthread_valid) {
+      for (int ks = 0; ks < KERNEL_SIZE; ks++) {
+        weight_buf[wthread_m_offset][wthread_k_offset][ks] = weight[
+          (wblock_m_offset + wthread_m_offset) * in_channels * KERNEL_SIZE
+          + (wblock_k_offset + wthread_k_offset) * KERNEL_SIZE + ks
+        ];
+      }
+    }
+
+    __syncthreads();
+
+    // compute
+    if (othread_valid) {
+      for (int k = 0; k < BK; k++) {
+        for (int ks = 0; ks < KERNEL_SIZE; ks++) {
+          val += weight_buf[othread_m_offset][k][ks] * input_buf[k][othread_n_offset + ks];
+        }
+      }
+    }
+
+    __syncthreads();
+  }
+
+  /** STORE **/
+  if (othread_valid) {
+    val += bias[oblock_m_offset + othread_m_offset];
+    if (relu && val < 0.0f) val = 0.0f;
+    output[(oblock_m_offset + othread_m_offset) * len_output + oblock_n_offset + othread_n_offset] = val;
+  }
+}
+
+static __global__ void conv1d_k7_cuda(
+  float *input, float *weight, float *bias, float *output,
+  int num_batch, int len_output, int in_channels, int out_channels,
+  int relu
+) {
+  /** PARAMS **/
+  // input: float[batch_size, in_channels, len_input]
+  // weight: float[out_channels, in_channels, kernel_size]
+  // bias: float[out_channels]
+  // output: float[batch_size, out_channels, len_output]
+
+  /** CONSTS **/
+  const int BM = C1D_K7_BM;
+  const int BN = C1D_K7_BN;
+  const int BK = C1D_K7_BK;
+
+  const int KERNEL_SIZE = KERNEL_SIZE_7;
   const int len_input = len_output + KERNEL_SIZE - 1;
 
   /** ASSERTION **/
@@ -681,11 +789,11 @@ void ComputeEngine::inference(int num_input) {
         cudaMemcpyHostToDevice, streams[gpu_idx]
       ));
 
-      dim3 grid(CEIL_DIV(256, C1D_SQB), CEIL_DIV(1008, C1D_SQB));
-      dim3 block(C1D_SQB, C1D_SQB);
-      conv1d_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
+      dim3 grid(CEIL_DIV(256, C1D_K7_BM), CEIL_DIV(1008, C1D_K7_BN));
+      dim3 block(C1D_K7_BM * C1D_K7_BN);
+      conv1d_k7_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
         a_input_gpu[gpu_idx], w_conv1_gpu[gpu_idx], b_conv1_gpu[gpu_idx], a_conv1_gpu[gpu_idx],
-        now_batch_size, 1008, 70, 256, 7,
+        now_batch_size, 1008, 70, 256,
         0
       );
 
@@ -707,11 +815,11 @@ void ComputeEngine::inference(int num_input) {
         cudaMemcpyHostToDevice, streams[gpu_idx]
       ));
 
-      dim3 grid(CEIL_DIV(256, C1D_SQB), CEIL_DIV(330, C1D_SQB));
-      dim3 block(C1D_SQB, C1D_SQB);
-      conv1d_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
+      dim3 grid(CEIL_DIV(256, C1D_K7_BM), CEIL_DIV(330, C1D_K7_BN));
+      dim3 block(C1D_K7_BM * C1D_K7_BN);
+      conv1d_k7_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
         a_pool1_gpu[gpu_idx], w_conv2_gpu[gpu_idx], b_conv2_gpu[gpu_idx], a_conv2_gpu[gpu_idx],
-        now_batch_size, 330, 256, 256, 7,
+        now_batch_size, 330, 256, 256,
         1
       );
 

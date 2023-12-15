@@ -39,6 +39,7 @@
 - conv1d_k3 square blocking: 1505.14 input(s)/sec
 - conv1d_k3 rectangular blocking: 1550.79 input(s)/sec
 - conv1d hyperparameter tuning: 2537.34 input(s)/sec
+- conv1d_k7 rectangular blocking: 3013.50 input(s)/sec
 
 ## Model Structure
 
