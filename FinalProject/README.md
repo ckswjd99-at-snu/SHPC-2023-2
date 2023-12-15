@@ -26,6 +26,22 @@
     - [ ] `conv1d_relu_conv1d_relu_conv1d_relu_conv1d_stat` (Conv block 3 - Conv lbock 6(front))
     - [ ] `linear_relu_linear` (FC block 2 - FC block 3)
 
+## Latency Breakdown
+
+Measured by annotating code sections.
+
+- Total: 2.718435 sec (100.00%)
+- MPI: 0.783851 sec (28.83%)
+    - Input scatter: 0.738431 sec (27.16%)
+    - Output gather: 0.045420 sec (1.67%)
+- Computing: 1.934584 sec (71.17%)
+    - `linear_cuda`: 1.201887 sec (44.21%)
+    - `conv1d_k7_cuda`: 0.930882 sec (34.24%)
+    - `conv1d_k3_cuda`: 0.851986 sec (31.34%)
+    - etc: -0.26632 sec
+
+
+
 ## Optimization History
 - Baseline: 2.12 input(s)/sec
 - Synchronous offload: 8.33 input(s)/sec
