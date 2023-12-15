@@ -82,7 +82,7 @@ int checksum(float *buf, int N) {
 #define C1D_K3_BK 8
 
 #define C1D_K7_BM 8
-#define C1D_K7_BN 16
+#define C1D_K7_BN 18
 #define C1D_K7_BK 4
 
 #define LIN_NAIVE_BM 4
@@ -186,8 +186,8 @@ static __global__ void conv1d_k3_cuda(
   int othread_valid = othread_m_offset < len_oblock_m;
   
   /** SMEM **/
-  __shared__ float input_buf[BB][BK][BN + KERNEL_SIZE - 1];
-  __shared__ float weight_buf[BM][BK][KERNEL_SIZE];
+  __shared__ float input_buf[BB][BK][BN + KERNEL_SIZE - 1 + 4];
+  __shared__ float weight_buf[BM][BK][KERNEL_SIZE + 4];
 
   /** LOOP OVER K **/
   for (int bk = 0; bk < in_channels; bk += BK) {
@@ -263,7 +263,7 @@ static __global__ void conv1d_k3_cuda(
 static __global__ void conv1d_k7_cuda(
   float *input, float *weight, float *bias, float *output,
   int num_batch, int len_output, int in_channels, int out_channels,
-  int relu
+  int relu, int mpool3=0, float *pooled_output=nullptr
 ) {
   /** PARAMS **/
   // input: float[batch_size, in_channels, len_input]
@@ -307,8 +307,8 @@ static __global__ void conv1d_k7_cuda(
   int othread_valid = othread_m_offset < len_oblock_m;
   
   /** SMEM **/
-  __shared__ float input_buf[BB][BK][BN + KERNEL_SIZE - 1];
-  __shared__ float weight_buf[BM][BK][KERNEL_SIZE];
+  __shared__ float input_buf[BB][BK][BN + KERNEL_SIZE - 1 + 4];
+  __shared__ float weight_buf[BM][BK][KERNEL_SIZE + 4];
 
   /** LOOP OVER K **/
   for (int bk = 0; bk < in_channels; bk += BK) {

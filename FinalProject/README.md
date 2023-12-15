@@ -30,15 +30,15 @@
 
 Measured by annotating code sections.
 
-- Total: 2.718435 sec (100.00%)
-- MPI: 0.783851 sec (28.83%)
-    - Input scatter: 0.738431 sec (27.16%)
-    - Output gather: 0.045420 sec (1.67%)
-- Computing: 1.934584 sec (71.17%)
-    - `linear_cuda`: 1.201887 sec (44.21%)
-    - `conv1d_k7_cuda`: 0.930882 sec (34.24%)
-    - `conv1d_k3_cuda`: 0.851986 sec (31.34%)
-    - etc: -0.26632 sec
+- Total: 2.263073 sec (100.00%)
+- MPI: 0.783851 sec (%)
+    - Input scatter: 0.738431 sec (%)
+    - Output gather: 0.045420 sec (%)
+- Computing: 1.171994 sec (%)
+    - `linear_naive_cuda`: 0.038134 sec (%)
+    - `linear_reg_cuda`: 0.158256 sec (%)
+    - `conv1d_k7_cuda`: 0.172168 sec (%)
+    - `conv1d_k3_cuda`: 0.170554 sec (%)
 
 
 
@@ -58,7 +58,7 @@ Measured by annotating code sections.
 - conv1d_k7 rectangular blocking: 3013.50 input(s)/sec
 - batched processing: 3501.90 input(s)/sec
 - linear rectangular: 3644.37 input(s)/sec
-- linear rect blocking: 3641.82 input(s)/sec
+- conv1d_k3, conv1d_k7 avoid bank conflict: 3753.42 input(s)/sec
 
 ## Model Structure
 
