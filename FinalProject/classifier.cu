@@ -32,11 +32,13 @@ static int iam_root;
 #define NGPU    4
 static cudaStream_t streams[NGPU];
 static float *a_input_gpu[NGPU], *a_conv1_gpu[NGPU];
+static float *a_layernorm1_gpu[NGPU];
 static float *a_pool1_gpu[NGPU], *a_conv2_gpu[NGPU];
 static float *a_pool2_gpu[NGPU], *a_conv3_gpu[NGPU];
 static float *a_conv4_gpu[NGPU];
 static float *a_conv5_gpu[NGPU];
 static float *a_conv6_gpu[NGPU];
+static float *a_layernorm6_gpu[NGPU];
 static float *a_collapse_gpu[NGPU];
 static float *a_linear1_gpu[NGPU];
 static float *a_linear2_gpu[NGPU];
@@ -51,6 +53,8 @@ static float *w_conv6_gpu[NGPU], *b_conv6_gpu[NGPU];
 static float *w_fc1_gpu[NGPU], *b_fc1_gpu[NGPU];
 static float *w_fc2_gpu[NGPU], *b_fc2_gpu[NGPU];
 static float *w_fc3_gpu[NGPU], *b_fc3_gpu[NGPU];
+static float *gamma_conv1_gpu[NGPU], *beta_conv1_gpu[NGPU];
+static float *gamma_conv6_gpu[NGPU], *beta_conv6_gpu[NGPU];
 
 
 /** SECTION: DEBUGGING **/
@@ -94,6 +98,10 @@ int checksum(float *buf, int N) {
 #define LIN_REG_BM 4
 #define LIN_REG_BN 16
 #define LIN_REG_BK 32
+
+#define LNORM_CHAN 256  // FIXED
+#define LNORM_CHPT 2
+#define LNORM_TPB  (LNORM_CHAN/LNORM_CHPT)  // FIXED
 
 
 /** SECTION: Tensor **/
@@ -169,8 +177,8 @@ static __global__ void conv1d_k3_cuda(
   #if DEBUG == 1
   if (BM * BN < BM * BK * KERNEL_SIZE) {
     if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0) {
-      printf("conv1d_k3_cuda: num of threads are insufficient for kernel load!\n");
-      return;
+      // printf("conv1d_k3_cuda: num of threads are insufficient for kernel load!\n");
+      // return;
     }
   }
   #endif
@@ -290,8 +298,8 @@ static __global__ void conv1d_k7_cuda(
   #if DEBUG == 1
   if (BM * BN < BM * BK * KERNEL_SIZE) {
     if (blockIdx.x == 0 && blockIdx.y == 0 && threadIdx.x == 0) {
-      printf("conv1d_k3_cuda: num of threads are insufficient for kernel load!\n");
-      return;
+      // printf("conv1d_k3_cuda: num of threads are insufficient for kernel load!\n");
+      // return;
     }
   }
   #endif
@@ -485,6 +493,54 @@ static __global__ void linear_reg_cuda(
 
 }
 
+static __global__ void layernorm_cuda(
+  float *input, float *gamma, float *beta, float *output,
+  int num_batch, int num_channels, int len_input
+) {
+
+  int now_batch = blockIdx.x;
+  int single_input_size = num_channels * len_input;
+  int single_output_size = num_channels * len_input;
+
+  int thread_stride = LNORM_CHPT * len_input;
+
+  __shared__ float sum1[LNORM_TPB];
+  __shared__ float sum2[LNORM_TPB];
+
+  float psum1 = 0.0f, psum2 = 0.0f;
+  for (int i = 0; i < thread_stride; ++i) {
+    psum1 += input[now_batch * single_input_size + threadIdx.x * thread_stride + i];
+    psum2 += input[now_batch * single_input_size + threadIdx.x * thread_stride + i]
+      * input[now_batch * single_input_size + threadIdx.x * thread_stride + i];
+  }
+
+  __syncthreads();
+
+  sum1[threadIdx.x] = psum1;
+  sum2[threadIdx.x] = psum2;
+  
+  if (threadIdx.x == 0) {
+    for (int i = 1; i < LNORM_TPB; i++) {
+      sum1[0] += sum1[i];
+      sum2[0] += sum2[i];
+    }
+  }
+
+  __syncthreads();
+
+  float mean1 = sum1[0] / (float)single_input_size;
+  float mean2 = sum2[0] / (float)single_input_size;
+
+  float var = mean2 - mean1 * mean1;
+
+  for (int i = 0; i < thread_stride; ++i) {
+    output[now_batch * single_output_size + threadIdx.x * thread_stride + i]
+    = (input[now_batch * single_input_size + threadIdx.x * thread_stride + i] - mean1)
+    / sqrtf(var + 1e-5) * gamma[threadIdx.x * thread_stride + i] + beta[threadIdx.x * thread_stride + i];
+  }
+  
+}
+
 
 /** SECTION: Operators **/
 
@@ -624,6 +680,7 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_, int gpu_idx_) {
     CHECK_CUDA(cudaSetDevice(i));
     CHECK_CUDA(cudaMalloc(&a_input_gpu[i], COMPUTE_BATCH_SIZE * 70 * 1014 * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&a_conv1_gpu[i], COMPUTE_BATCH_SIZE * 256 * 1008 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&a_layernorm1_gpu[i], COMPUTE_BATCH_SIZE * 256 * 1008 * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&a_pool1_gpu[i], COMPUTE_BATCH_SIZE * 256 * 336 * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&a_conv2_gpu[i], COMPUTE_BATCH_SIZE * 256 * 330 * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&a_pool2_gpu[i], COMPUTE_BATCH_SIZE * 256 * 110 * sizeof(float)));
@@ -631,6 +688,7 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_, int gpu_idx_) {
     CHECK_CUDA(cudaMalloc(&a_conv4_gpu[i], COMPUTE_BATCH_SIZE * 256 * 106 * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&a_conv5_gpu[i], COMPUTE_BATCH_SIZE * 256 * 104 * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&a_conv6_gpu[i], COMPUTE_BATCH_SIZE * 256 * 102 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&a_layernorm6_gpu[i], COMPUTE_BATCH_SIZE * 256 * 102 * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&a_collapse_gpu[i], COMPUTE_BATCH_SIZE * 8704 * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&a_linear1_gpu[i], COMPUTE_BATCH_SIZE * 1024 * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&a_linear2_gpu[i], COMPUTE_BATCH_SIZE * 1024 * sizeof(float)));
@@ -654,6 +712,10 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_, int gpu_idx_) {
     CHECK_CUDA(cudaMalloc(&b_fc2_gpu[i], 1024 * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&w_fc3_gpu[i], 4 * 1024 * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&b_fc3_gpu[i], 4 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&gamma_conv1_gpu[i], 256 * 1008 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&beta_conv1_gpu[i], 256 * 1008 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&gamma_conv6_gpu[i], 256 * 102 * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&beta_conv6_gpu[i], 256 * 102 * sizeof(float)));
 
     CHECK_CUDA(cudaMemcpyAsync(
       w_conv1_gpu[i], parameter_ + OFFSET0, 256 * 70 * 7 * sizeof(float),
@@ -661,6 +723,14 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_, int gpu_idx_) {
     ));
     CHECK_CUDA(cudaMemcpyAsync(
       b_conv1_gpu[i], parameter_ + OFFSET1, 256 * sizeof(float),
+      cudaMemcpyHostToDevice, streams[i]
+    ));
+    CHECK_CUDA(cudaMemcpyAsync(
+      gamma_conv1_gpu[i], parameter_ + OFFSET2, 256 * 1008 * sizeof(float),
+      cudaMemcpyHostToDevice, streams[i]
+    ));
+    CHECK_CUDA(cudaMemcpyAsync(
+      beta_conv1_gpu[i], parameter_ + OFFSET3, 256 * 1008 * sizeof(float),
       cudaMemcpyHostToDevice, streams[i]
     ));
     CHECK_CUDA(cudaMemcpyAsync(
@@ -701,6 +771,14 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_, int gpu_idx_) {
     ));
     CHECK_CUDA(cudaMemcpyAsync(
       b_conv6_gpu[i], parameter_ + OFFSET13, 256 * sizeof(float),
+      cudaMemcpyHostToDevice, streams[i]
+    ));
+    CHECK_CUDA(cudaMemcpyAsync(
+      gamma_conv6_gpu[i], parameter_ + OFFSET14, 256 * 102 * sizeof(float),
+      cudaMemcpyHostToDevice, streams[i]
+    ));
+    CHECK_CUDA(cudaMemcpyAsync(
+      beta_conv6_gpu[i], parameter_ + OFFSET15, 256 * 102 * sizeof(float),
       cudaMemcpyHostToDevice, streams[i]
     ));
     CHECK_CUDA(cudaMemcpyAsync(
@@ -835,14 +913,19 @@ void ComputeEngine::inference(int num_input) {
         0
       );
 
+      layernorm_cuda<<<now_batch_size, LNORM_TPB, 0, streams[gpu_idx]>>>(
+        a_conv1_gpu[gpu_idx], gamma_conv1_gpu[gpu_idx], beta_conv1_gpu[gpu_idx], a_layernorm1_gpu[gpu_idx],
+        now_batch_size, 256, 1008
+      );
+
       CHECK_CUDA(cudaMemcpyAsync(
-        a_conv1->buf, a_conv1_gpu[gpu_idx], now_batch_size * 256 * 1008 * sizeof(float),
+        a_layernorm1->buf, a_layernorm1_gpu[gpu_idx], now_batch_size * 256 * 1008 * sizeof(float),
         cudaMemcpyDeviceToHost, streams[gpu_idx]
       ));
 
       CHECK_CUDA(cudaStreamSynchronize(streams[gpu_idx]));
-      
-      layernorm(a_conv1, gamma_conv1, beta_conv1, a_layernorm1);
+
+      // layernorm(a_conv1, gamma_conv1, beta_conv1, a_layernorm1);
       maxpool1d(a_layernorm1, a_pool1, 3, 3, 1);
     }
 
@@ -922,14 +1005,18 @@ void ComputeEngine::inference(int num_input) {
         0
       );
 
+      layernorm_cuda<<<now_batch_size, LNORM_TPB, 0, streams[gpu_idx]>>>(
+        a_conv6_gpu[gpu_idx], gamma_conv6_gpu[gpu_idx], beta_conv6_gpu[gpu_idx], a_layernorm6_gpu[gpu_idx],
+        now_batch_size, 256, 102
+      );
+
       CHECK_CUDA(cudaMemcpyAsync(
-        a_conv6->buf, a_conv6_gpu[gpu_idx], now_batch_size * 256 * 102 * sizeof(float),
+        a_layernorm6->buf, a_layernorm6_gpu[gpu_idx], now_batch_size * 256 * 102 * sizeof(float),
         cudaMemcpyDeviceToHost, streams[gpu_idx]
       ));
 
       CHECK_CUDA(cudaStreamSynchronize(streams[gpu_idx]));
     }
-    layernorm(a_conv6, gamma_conv6, beta_conv6, a_layernorm6);
     maxpool1d(a_layernorm6, a_pool6, 3, 3, 1);
 
     // FC block 1 : Linear + ReLU

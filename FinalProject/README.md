@@ -11,8 +11,8 @@
 - [ ] Calculate each operators with CUDA: `conv1d`, `layernorm`, `relu`, `maxpool1d`, `linear`, etc.
     - [ ] Create CUDA version of each operators
         - `conv1d`: Rectangular blocking
-        - `layernorm`: None
-        - `relu`: None
+        - `layernorm`: Naive
+        - `relu`: All merged into the other operators
         - `maxpool1d`: None
         - `linear`: Naive
     - [ ] Store most of intermediate features in global memory
@@ -28,12 +28,12 @@
 
 ## Latency Breakdown
 
-Measured by annotating code sections.
+Measured by annotating code sections. (outdated)
 
-- Total: 2.263073 sec (100.00%)
-- MPI: 0.783851 sec (%)
-    - Input scatter: 0.738431 sec (%)
-    - Output gather: 0.045420 sec (%)
+- Total: 2.296164 sec (100.00%)
+- MPI: 0.509444 sec (%)
+    - Input scatter: 0. sec (%)
+    - Output gather: 0. sec (%)
 - Computing: 1.171994 sec (%)
     - `linear_naive_cuda`: 0.038134 sec (%)
     - `linear_reg_cuda`: 0.158256 sec (%)
@@ -56,9 +56,10 @@ Measured by annotating code sections.
 - conv1d_k3 rectangular blocking: 1550.79 input(s)/sec
 - conv1d hyperparameter tuning: 2537.34 input(s)/sec
 - conv1d_k7 rectangular blocking: 3013.50 input(s)/sec
-- batched processing: 3501.90 input(s)/sec
+- Batched processing: 3501.90 input(s)/sec
 - linear rectangular: 3644.37 input(s)/sec
 - conv1d_k3, conv1d_k7 avoid bank conflict: 3753.42 input(s)/sec
+- Naive linear normalization: 4241.36 input(s)/sec
 
 ## Model Structure
 
