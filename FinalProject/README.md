@@ -1,71 +1,78 @@
 # Optimizing CNN Model with CUDA
 
-## Optimization Methods to Apply
+## Applied Optimization Methods
 
 - [x] Synchronously offload input to other nodes using MPI
 
-- [ ] Asynchronously offload input to other nodes using MPI
+- [x] Asynchronously offload input to other nodes using MPI
 
 - [x] Calculate multiple batches at once
 
-- [ ] Calculate each operators with CUDA: `conv1d`, `layernorm`, `relu`, `maxpool1d`, `linear`, etc.
-    - [ ] Create CUDA version of each operators
+- [x] Calculate each operators with CUDA: `conv1d`, `layernorm`, `relu`, `maxpool1d`, `linear`, etc.
+    - [x] Create CUDA version of each operators
         - `conv1d`: Rectangular blocking
         - `layernorm`: Naive
         - `relu`: All merged into the other operators
-        - `maxpool1d`: None
+        - `maxpool1d`: Naive
         - `linear`: Naive
-    - [ ] Store most of intermediate features in global memory
+    - [x] Store most of intermediate features in global memory
 
 - [x] Create weakly fused operators: `conv1d_relu`, `conv1d_stat`, `linear_relu`, etc.
     - [x] `conv1d_relu`: integrated into `conv1d`.
     - [x] `linear_relu`: integrated into `linear`.
 
-- [ ] Create strongly fused operators
+- [ ] Create strongly fused operators (**no need to do this, it has come to be network-bottlenecked**)
     - [ ] `layernorm_relu_maxpool1d` (Conv block 1(back), Conv block 6(back))
     - [ ] `conv1d_relu_conv1d_relu_conv1d_relu_conv1d_stat` (Conv block 3 - Conv lbock 6(front))
     - [ ] `linear_relu_linear` (FC block 2 - FC block 3)
 
 ## Latency Breakdown
 
-Measured by annotating code sections. (outdated)
+Measured in debug mode, in seconds.
 
-- Total: 2.296164 sec (100.00%)
-- MPI: 0.509444 sec (%)
-    - Input scatter: 0. sec (%)
-    - Output gather: 0. sec (%)
-- Computing: 1.171994 sec (%)
-    - `linear_naive_cuda`: 0.038134 sec (%)
-    - `linear_reg_cuda`: 0.158256 sec (%)
-    - `conv1d_k7_cuda`: 0.172168 sec (%)
-    - `conv1d_k3_cuda`: 0.170554 sec (%)
+- Elapsed time: **0.880531 sec**
+- Throughput: **9303.474877 input(s)/sec**
 
+| NODE              | 00(root) | 01       | 02       | 03       |
+|:------------------|:--------:|:--------:|:--------:|:--------:|
+| start_classifier  | 0.000000 | 0.000000 | 0.000000 | 0.000000 |
+| init_mem          | 0.000000 | 0.000016 | 0.000029 | 0.000013 |
+| init_ce           | 0.000183 | 0.000032 | 0.000065 | 0.000026 |
+| scatter_start     | 0.000206 | 0.000215 | 0.000296 | 0.000199 |
+| ce_start_gpu0     | 0.000225 | 0.005239 | 0.009069 | 0.013125 |
+| ce_start_gpu1     | 0.000331 | 0.017486 | 0.021290 | 0.025264 |
+| ce_start_gpu2     | 0.000374 | 0.029747 | 0.033609 | 0.037557 |
+| ce_start_gpu3     | 0.000270 | 0.041901 | 0.045766 | 0.049682 |
+| scatter_end       | 0.810448 | 0.802368 | 0.806489 | 0.810455 |
+| ce_end            | 0.810464 | 0.826805 | 0.831194 | 0.835908 |
+| gather_end        | 0.836118 | 0.826890 | 0.836094 | 0.836072 |
+| finish_classifier | 0.836125 | 0.826905 | 0.836106 | 0.836081 |
 
 
 ## Optimization History
-- Baseline: 2.12 input(s)/sec
-- Synchronous offload: 8.33 input(s)/sec
-- Naively batched computation: 7.86 input(s)/sec
-- Naive CUDA conv1d: 12.76 input(s)/sec
-- Replace every conv1d with conv1d_cuda, fuse relu: 165.00 input(s)/sec
-- Use multiple GPUs: 555.00 input(s)/sec
-- Naive CUDA linear: 727.20 input(s)/sec
-- Replace every linear with linear_cuda, fuse relu: 1152.75 input(s)/sec
-- Merged maxpool1d and relu: 1290.74 input(s)/sec
-- conv1d_k3 square blocking: 1505.14 input(s)/sec
-- conv1d_k3 rectangular blocking: 1550.79 input(s)/sec
-- conv1d hyperparameter tuning: 2537.34 input(s)/sec
-- conv1d_k7 rectangular blocking: 3013.50 input(s)/sec
-- Batched processing: 3501.90 input(s)/sec
-- linear rectangular: 3644.37 input(s)/sec
-- conv1d_k3, conv1d_k7 avoid bank conflict: 3753.42 input(s)/sec
-- Naive linear normalization: 4241.36 input(s)/sec
-- Naive maxpool1d: 5266.67 input(s)/sec
-- Memory cleanup: 5865.32 input(s)/sec
-- No more Tensor type: 6175.81 input(s)/sec
-- Scatter into Scatterv: 5924.65 input(s)/sec
-- Networking & offloading interleaved: 8587.53 input(s)/sec
-- Fine-grained interleaving: 9022.954883 input(s)/sec
+- Baseline: **2.12** input(s)/sec
+- Synchronous offload: **8.33** input(s)/sec
+- Naively batched computation: **7.86** input(s)/sec
+- Naive CUDA conv1d: **12.76** input(s)/sec
+- Replace every conv1d with conv1d_cuda, fuse relu: **165.00** input(s)/sec
+- Use multiple GPUs: **555.00** input(s)/sec
+- Naive CUDA linear: **727.20** input(s)/sec
+- Replace every linear with linear_cuda, fuse relu: **1152.75** input(s)/sec
+- Merged maxpool1d and relu: **1290.74** input(s)/sec
+- conv1d_k3 square blocking: **1505.14** input(s)/sec
+- conv1d_k3 rectangular blocking: **1550.79** input(s)/sec
+- conv1d hyperparameter tuning: **2537.34** input(s)/sec
+- conv1d_k7 rectangular blocking: **3013.50** input(s)/sec
+- Batched processing: **3501.90** input(s)/sec
+- linear rectangular: **3644.37** input(s)/sec
+- conv1d_k3, conv1d_k7 avoid bank conflict: **3753.42** input(s)/sec
+- Naive linear normalization: **4241.36** input(s)/sec
+- Naive maxpool1d: **5266.67** input(s)/sec
+- Memory cleanup: **5865.32** input(s)/sec
+- No more Tensor type: **6175.81** input(s)/sec
+- Scatter into Scatterv: **5924.65** input(s)/sec
+- Networking & offloading interleaved: **8587.53** input(s)/sec
+- Fine-grained interleaving: **9303.47** input(s)/sec
 
 ## Model Structure
 

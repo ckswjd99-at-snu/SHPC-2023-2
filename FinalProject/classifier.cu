@@ -55,8 +55,8 @@ int checksum(float *buf, int N) {
 /** SECTION: Hyperparams **/
 #define MAX_MPI_SIZE 4
 
-#define PUSH_BATCH_SIZE 32
-#define POP_BATCH_SIZE 32
+#define PUSH_BATCH_SIZE 16
+#define POP_BATCH_SIZE 16
 #define COMPUTE_BATCH_SIZE 4
 
 #define C1D_K3_BM 16
@@ -579,6 +579,11 @@ private:
   float *w_fc3_gpu, *b_fc3_gpu;
   float *gamma_conv1_gpu, *beta_conv1_gpu;
   float *gamma_conv6_gpu, *beta_conv6_gpu;
+
+  // Debugging
+  #if DEBUG == 1
+  int never_inferenced;
+  #endif
 };
 
 ComputeEngine *compute_engines[NGPU];
@@ -734,9 +739,13 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_, int gpu_idx_) {
   
   CHECK_CUDA(cudaStreamSynchronize(_gpu_stream));
   
-
   // Initialize activations
   a_linear3 = (float *)calloc(COMPUTE_BATCH_SIZE * 4, sizeof(float));
+
+  // Debugging
+  #if DEBUG == 1
+  never_inferenced = 1;
+  #endif
 }
 
 ComputeEngine::~ComputeEngine() {
@@ -782,14 +791,18 @@ float *ComputeEngine::pop() {
 }
 
 void ComputeEngine::inference(float *popped_input) {
-  DEBUG_PRINT("Inference %d\n", num_input);
+  #if DEBUG == 1
+  if (never_inferenced) {
+    DEBUG_PRINT("GPU %d Inference started: %f\n", _gpu_idx, get_time());
+    never_inferenced = 0;
+  }
+  #endif
 
   int num_input = POP_BATCH_SIZE;
 
   CHECK_CUDA(cudaSetDevice(_gpu_idx));
   
   for (int batch = 0; batch < num_input; batch+=COMPUTE_BATCH_SIZE) {
-    DEBUG_PRINT("Inference %d/%d\n", num_input_processed+1, num_input);
 
     int now_batch_size = COMPUTE_BATCH_SIZE;
 
@@ -983,6 +996,7 @@ void classifier_root(float *input_, float *output_, int N) {
     compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
     compute_engines[ce_idx]->run();
   }
+  DEBUG_PRINT("Compute engines initialized: %f\n", get_time());
 
   // Compute
   for (int wl_pushed = 0; wl_pushed < N / mpi_size; wl_pushed += PUSH_BATCH_SIZE) {
@@ -993,7 +1007,7 @@ void classifier_root(float *input_, float *output_, int N) {
   }
 
   // Scatter input & initialize memory
-  DEBUG_PRINT("Scatter input\n");
+  DEBUG_PRINT("Scatter input: %f\n", get_time());
   int scv_displacements[MAX_MPI_SIZE];
   int scv_counts[MAX_MPI_SIZE];
 
@@ -1015,24 +1029,26 @@ void classifier_root(float *input_, float *output_, int N) {
       );
     }
   }
-  DEBUG_PRINT("Scatter input done\n");
+  DEBUG_PRINT("Scatter input done: %f\n", get_time());
 
   // Wait completion
   for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
     compute_engines[ce_idx]->join();
   }
+  DEBUG_PRINT("Computation complete: %f\n", get_time());
 
   // Gather output
   MPI_Gather(
     MPI_IN_PLACE, N / mpi_size, MPI_FLOAT,
     output_, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD
   );
+  DEBUG_PRINT("Gathered output: %f\n", get_time());
 
 }
 
 void classifier_nonroot(float *input_, float *output_, int N) {
   // Initialize memory
-  DEBUG_PRINT("Scatter input\n");
+  DEBUG_PRINT("Init mem: %f\n", get_time());
   if (input_ == nullptr) 
     input_ = (float *) calloc(
       N * VOCAB_SIZE * MAX_LENGTH / mpi_size, 
@@ -1042,6 +1058,7 @@ void classifier_nonroot(float *input_, float *output_, int N) {
     output_ = (float *) calloc(N / mpi_size, sizeof(float));
 
   // Start compute engines
+  DEBUG_PRINT("Init CE: %f\n", get_time());
   for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
     compute_engines[ce_idx]->set_input(input_ + ce_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH);
     compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
@@ -1049,6 +1066,7 @@ void classifier_nonroot(float *input_, float *output_, int N) {
   }
 
   // Scatter input
+  DEBUG_PRINT("Scatter input: %f\n", get_time());
   int scv_displacements[MAX_MPI_SIZE];
   int scv_counts[MAX_MPI_SIZE];
 
@@ -1072,24 +1090,27 @@ void classifier_nonroot(float *input_, float *output_, int N) {
       compute_engines[gpu_idx]->push(PUSH_BATCH_SIZE);
     }
   }
-  DEBUG_PRINT("Scatter input done\n");
+  DEBUG_PRINT("Scatter input done: %f\n", get_time());
 
   // Wait completion
   for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
     compute_engines[ce_idx]->join();
   }
+  DEBUG_PRINT("Computation complete: %f\n", get_time());
 
   // Gather output
   MPI_Gather(
     output_, N / mpi_size, MPI_FLOAT,
     MPI_IN_PLACE, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD
   );
+  DEBUG_PRINT("Gathered output: %f\n", get_time());
 }
 
 void classifier(float *input_, float *output_, int N) {
+  DEBUG_PRINT("Start classifier: %f\n", get_time());
   if (iam_root) classifier_root(input_, output_, N);
   else classifier_nonroot(input_, output_, N);
-
+  DEBUG_PRINT("Finish classifier: %f\n", get_time());
 }
 
 void finalize_classifier() {
