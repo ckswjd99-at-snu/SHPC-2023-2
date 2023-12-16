@@ -34,6 +34,33 @@ slurm에 의해 배정되는 노드의 종류나 그 사이의 네트워크 topo
 반복을 통해 얻은 최고 성능은 9345.39 input(s)/sec이었다.
 \textbf{최종 성능 채점시에 이와 같은 점이 충분히 고려되어야 한다.}
 
+\subsection{Latency Breakdown}
+
+자체 구현한 디버그 모드로 실행하여 Tab.~\ref{tab:latency_breakdown}과 같이 
+latency를 세부적으로 분석하였다. 단위는 초(sec)이다.
+측정시에 전체 소요시간은 0.880531 sec 이었으며, throughput은 9303.474877 input(s)/sec 이었다.
+
+\begin{table}[]
+    \centering
+    \begin{tabular}{l|rrrr}
+    \multicolumn{1}{c|}{NODE} & \multicolumn{1}{c}{00(root)} & \multicolumn{1}{c}{01} & \multicolumn{1}{c}{02} & \multicolumn{1}{c}{03} \\ \hline
+    Classifier 시작           & 0.000000               & 0.000000               & 0.000000               & 0.000000               \\
+    메모리 초기화              & 0.000000               & 0.000016               & 0.000029               & 0.000013               \\
+    Compute Engine 초기화     & 0.000183               & 0.000032               & 0.000065               & 0.000026               \\
+    Input 분산 시작            & 0.000206               & 0.000215               & 0.000296               & 0.000199               \\
+    GPU0 연산 시작             & 0.000225               & 0.005239               & 0.009069               & 0.013125               \\
+    GPU1 연산 시작             & 0.000331               & 0.017486               & 0.021290               & 0.025264               \\
+    GPU2 연산 시작             & 0.000374               & 0.029747               & 0.033609               & 0.037557               \\
+    GPU3 연산 시작             & 0.000270               & 0.041901               & 0.045766               & 0.049682               \\
+    Input 분산 종료            & 0.810448               & 0.802368               & 0.806489               & 0.810455               \\
+    Compute Engine 종료       & 0.810464               & 0.826805               & 0.831194               & 0.835908               \\
+    Output을 root에 전달       & 0.836118               & 0.826890               & 0.836094               & 0.836072               \\
+    Classifier 종료           & 0.836125               & 0.826905               & 0.836106               & 0.836081              
+    \end{tabular}
+    \caption{Latency breakdown of my implementation, in seconds.}
+    \label{tab:latency_breakdown}
+\end{table}
+
 \subsection{Optimization Techniques}
 
 다음과 같은 최적화 기법을 나열한 뒤, 하나씩 적용하며 최적화하였다.
