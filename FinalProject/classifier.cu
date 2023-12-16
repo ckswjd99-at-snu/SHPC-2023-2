@@ -609,7 +609,6 @@ private:
       *b_fc1, *b_fc2, *b_fc3, *gamma_conv1, *beta_conv1, *gamma_conv6, *beta_conv6;
 
   // Activations
-  Tensor *a_conv1, *a_layernorm1, *a_relu1, *a_pool1;
   Tensor *a_relu2, *a_pool2;
   Tensor *a_conv6, *a_layernorm6, *a_relu6, *a_pool6;
   Tensor *a_linear3;
@@ -770,28 +769,8 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_, int gpu_idx_) {
     
     CHECK_CUDA(cudaStreamSynchronize(streams[i]));
   }
-  gamma_conv1 = new Tensor({256, 1008}, parameter_ + OFFSET2);
-  beta_conv1 = new Tensor({256, 1008}, parameter_ + OFFSET3);
-  gamma_conv6 = new Tensor({256, 102}, parameter_ + OFFSET14);
-  beta_conv6 = new Tensor({256, 102}, parameter_ + OFFSET15);
-  w_fc1 = new Tensor({1024, 8704}, parameter_ + OFFSET16);
-  b_fc1 = new Tensor({1024}, parameter_ + OFFSET17);
-  w_fc2 = new Tensor({1024, 1024}, parameter_ + OFFSET18);
-  b_fc2 = new Tensor({1024}, parameter_ + OFFSET19);
-  w_fc3 = new Tensor({4, 1024}, parameter_ + OFFSET20);
-  b_fc3 = new Tensor({4}, parameter_ + OFFSET21);
 
   // Initialize activations
-  a_conv1 = new Tensor({COMPUTE_BATCH_SIZE, 256, 1008});
-  a_layernorm1 = new Tensor({COMPUTE_BATCH_SIZE, 256, 1008});
-  a_relu1 = new Tensor({COMPUTE_BATCH_SIZE, 256, 1008});
-  a_pool1 = new Tensor({COMPUTE_BATCH_SIZE, 256, 336});
-  a_relu2 = new Tensor({COMPUTE_BATCH_SIZE, 256, 330});
-  a_pool2 = new Tensor({COMPUTE_BATCH_SIZE, 256, 110});
-  a_conv6 = new Tensor({COMPUTE_BATCH_SIZE, 256, 102});
-  a_layernorm6 = new Tensor({COMPUTE_BATCH_SIZE, 256, 102});
-  a_relu6 = new Tensor({COMPUTE_BATCH_SIZE, 256, 102});
-  a_pool6 = new Tensor({COMPUTE_BATCH_SIZE, 256, 34});
   a_linear3 = new Tensor({COMPUTE_BATCH_SIZE, 4});
 }
 
@@ -799,15 +778,6 @@ ComputeEngine::~ComputeEngine() {
   pthread_mutex_destroy(&mutex_queue);
   pthread_cond_destroy(&cond_queue);
 
-  delete w_fc1; delete b_fc1;
-  delete w_fc2; delete b_fc2;
-  delete w_fc3; delete b_fc3;
-  
-  delete gamma_conv1; delete gamma_conv6;
-  delete beta_conv1; delete beta_conv6;
-  delete a_conv1; delete a_layernorm1; delete a_relu1; delete a_pool1;
-  delete a_relu2; delete a_pool2;
-  delete a_conv6; delete a_layernorm6; delete a_relu6; delete a_pool6;
   delete a_linear3;
 }
 
@@ -854,16 +824,12 @@ void ComputeEngine::inference(int num_input) {
     DEBUG_PRINT("Inference %d/%d\n", num_input_processed+1, num_input);
 
     int now_batch_size = std::min(COMPUTE_BATCH_SIZE, num_input - batch);
-    
-    Tensor *input = new Tensor(
-      {now_batch_size, VOCAB_SIZE, MAX_LENGTH}, 
-      input_to_process + batch * VOCAB_SIZE * MAX_LENGTH
-    );
 
     // Conv block 1 : Conv1d + LayerNorm + ReLU + MaxPool1d
     {
       CHECK_CUDA(cudaMemcpyAsync(
-        a_input_gpu[gpu_idx], input->buf, now_batch_size * 70 * 1014 * sizeof(float),
+        a_input_gpu[gpu_idx], input_to_process + batch * VOCAB_SIZE * MAX_LENGTH,
+        now_batch_size * 70 * 1014 * sizeof(float),
         cudaMemcpyHostToDevice, streams[gpu_idx]
       ));
 

@@ -61,6 +61,7 @@ Measured by annotating code sections. (outdated)
 - conv1d_k3, conv1d_k7 avoid bank conflict: 3753.42 input(s)/sec
 - Naive linear normalization: 4241.36 input(s)/sec
 - Naive maxpool1d: 5266.67 input(s)/sec
+- Memory cleanup: 5865.32 input(s)/sec
 
 ## Model Structure
 
