@@ -573,8 +573,8 @@ private:
   pthread_mutex_t mutex_queue;
   pthread_cond_t cond_queue;
 
-  int pop();
-  void inference(int num_input);
+  float *pop();
+  void inference(float *popped_input);
 
   // Runner
   static void *run_func(void *arg);
@@ -798,18 +798,21 @@ void ComputeEngine::push(int num_input) {
   pthread_mutex_unlock(&mutex_queue);
 }
 
-int ComputeEngine::pop() {
-  int num_input = 0;
+float *ComputeEngine::pop() {
+  float *pop_input;
   pthread_mutex_lock(&mutex_queue);
   if (num_input_ready == 0) pthread_cond_wait(&cond_queue, &mutex_queue);
-  num_input = std::min(num_input_ready, POP_BATCH_SIZE);
-  num_input_ready -= num_input;
+  pop_input = input_to_process;
+  input_to_process += POP_BATCH_SIZE * VOCAB_SIZE * MAX_LENGTH;
+  num_input_ready -= POP_BATCH_SIZE;
   pthread_mutex_unlock(&mutex_queue);
-  return num_input;
+  return pop_input;
 }
 
-void ComputeEngine::inference(int num_input) {
+void ComputeEngine::inference(float *popped_input) {
   DEBUG_PRINT("Inference %d\n", num_input);
+
+  int num_input = POP_BATCH_SIZE;
 
   CHECK_CUDA(cudaSetDevice(_gpu_idx));
   
@@ -821,7 +824,7 @@ void ComputeEngine::inference(int num_input) {
     // Conv block 1 : Conv1d + LayerNorm + ReLU + MaxPool1d
     {
       CHECK_CUDA(cudaMemcpyAsync(
-        a_input_gpu, input_to_process + batch * VOCAB_SIZE * MAX_LENGTH,
+        a_input_gpu, popped_input + batch * VOCAB_SIZE * MAX_LENGTH,
         now_batch_size * 70 * 1014 * sizeof(float),
         cudaMemcpyHostToDevice, _gpu_stream
       ));
@@ -977,15 +980,13 @@ void ComputeEngine::inference(int num_input) {
     }
 
   }
-
-  input_to_process += num_input * VOCAB_SIZE * MAX_LENGTH;
 }
 
 void *ComputeEngine::run_func(void *arg) {
   ComputeEngine *engine = (ComputeEngine *) arg;
   while (engine->num_input_processed < engine->num_input) {
-    int num_input = engine->pop();
-    engine->inference(num_input);
+    float *popped_input = engine->pop();
+    engine->inference(popped_input);
   }
   return NULL;
 }
