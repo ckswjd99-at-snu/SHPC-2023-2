@@ -53,9 +53,9 @@ int checksum(float *buf, int N) {
 
 
 /** SECTION: Hyperparams **/
-#define ROOT_INPUT_N    (2048 + 256 * 3)
-#define NONROOT_INPUT_N (2048 - 256)
+#define MAX_MPI_SIZE 4
 
+#define PUSH_BATCH_SIZE 128
 #define POP_BATCH_SIZE 32
 #define COMPUTE_BATCH_SIZE 4
 
@@ -977,23 +977,47 @@ void initialize_classifier(float *parameter, int N) {
 }
 
 void classifier_root(float *input_, float *output_, int N) {
-  // Compute
+  // Initialize CE
   for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
     compute_engines[ce_idx]->set_input(input_ + ce_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH);
     compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
     compute_engines[ce_idx]->run();
-    compute_engines[ce_idx]->push(N / mpi_size / NGPU);
+  }
+
+  // Compute
+  for (int wl_pushed = 0; wl_pushed < N / mpi_size; wl_pushed += PUSH_BATCH_SIZE) {
+    int wl_to_push = min(PUSH_BATCH_SIZE, N / mpi_size - wl_pushed);
+    for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+      compute_engines[ce_idx]->push(wl_to_push / NGPU);
+    }
   }
 
   // Scatter input & initialize memory
   DEBUG_PRINT("Scatter input\n");
-  MPI_Scatter(
-    input_, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT,
-    MPI_IN_PLACE, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT, 
-    0, MPI_COMM_WORLD
-  );
+  int scv_displacements[MAX_MPI_SIZE];
+  int scv_counts[MAX_MPI_SIZE];
+
+  for (int node_idx = 0; node_idx < mpi_size; ++node_idx) {
+    scv_displacements[node_idx] = node_idx * N / mpi_size * VOCAB_SIZE * MAX_LENGTH;
+    scv_counts[node_idx] = PUSH_BATCH_SIZE * VOCAB_SIZE * MAX_LENGTH;
+  }
+
+  for (int scv_idx = 0; scv_idx < N / mpi_size / NGPU; scv_idx += PUSH_BATCH_SIZE) {
+    for (int gpu_idx = 0; gpu_idx < NGPU; gpu_idx++) {
+      float *now_input = input_
+       + scv_idx * VOCAB_SIZE * MAX_LENGTH
+       + gpu_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH;
+      
+      MPI_Scatterv(
+        now_input, scv_counts, scv_displacements, MPI_FLOAT,
+        MPI_IN_PLACE, scv_counts[mpi_rank], MPI_FLOAT,
+        0, MPI_COMM_WORLD
+      );
+    }
+  }
   DEBUG_PRINT("Scatter input done\n");
 
+  // Wait completion
   for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
     compute_engines[ce_idx]->join();
   }
@@ -1017,22 +1041,46 @@ void classifier_nonroot(float *input_, float *output_, int N) {
   if (output_ == nullptr) 
     output_ = (float *) calloc(N / mpi_size, sizeof(float));
 
-  // Scatter input
-  MPI_Scatter(
-    MPI_IN_PLACE, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT,
-    input_, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT, 
-    0, MPI_COMM_WORLD
-  );
-  DEBUG_PRINT("Scatter input done\n");
-
-  // Compute
+  // Start compute engines
   for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
     compute_engines[ce_idx]->set_input(input_ + ce_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH);
     compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
     compute_engines[ce_idx]->run();
-    compute_engines[ce_idx]->push(N / mpi_size / NGPU);
   }
 
+  // Scatter input
+  int scv_displacements[MAX_MPI_SIZE];
+  int scv_counts[MAX_MPI_SIZE];
+
+  for (int node_idx = 0; node_idx < mpi_size; ++node_idx) {
+    scv_displacements[node_idx] = node_idx * N / mpi_size * VOCAB_SIZE * MAX_LENGTH;
+    scv_counts[node_idx] = PUSH_BATCH_SIZE * VOCAB_SIZE * MAX_LENGTH;
+  }
+
+  for (int scv_idx = 0; scv_idx < N / mpi_size / NGPU; scv_idx += PUSH_BATCH_SIZE) {
+    for (int gpu_idx = 0; gpu_idx < NGPU; gpu_idx++) {
+      float *now_input = input_
+       + scv_idx * VOCAB_SIZE * MAX_LENGTH
+       + gpu_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH;
+      
+      MPI_Scatterv(
+        MPI_IN_PLACE, scv_counts, scv_displacements, MPI_FLOAT,
+        now_input, scv_counts[mpi_rank], MPI_FLOAT,
+        0, MPI_COMM_WORLD
+      );
+    }
+  }
+  DEBUG_PRINT("Scatter input done\n");
+
+  // Compute
+  for (int wl_pushed = 0; wl_pushed < N / mpi_size; wl_pushed += PUSH_BATCH_SIZE) {
+    int wl_to_push = min(PUSH_BATCH_SIZE, N / mpi_size - wl_pushed);
+    for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+      compute_engines[ce_idx]->push(wl_to_push / NGPU);
+    }
+  }
+
+  // Wait completion
   for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
     compute_engines[ce_idx]->join();
   }

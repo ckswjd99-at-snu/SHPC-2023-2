@@ -63,6 +63,7 @@ Measured by annotating code sections. (outdated)
 - Naive maxpool1d: 5266.67 input(s)/sec
 - Memory cleanup: 5865.32 input(s)/sec
 - No more Tensor type: 6175.81 input(s)/sec
+- Scatter into Scatterv: 5924.65 input(s)/sec
 
 ## Model Structure
 
