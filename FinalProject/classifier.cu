@@ -989,127 +989,123 @@ void initialize_classifier(float *parameter, int N) {
     compute_engines[ce_idx] = new ComputeEngine(parameter, N / mpi_size / NGPU, ce_idx);
 }
 
-void classifier_root(float *input_, float *output_, int N) {
-  // Initialize CE
-  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
-    compute_engines[ce_idx]->set_input(input_ + ce_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH);
-    compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
-    compute_engines[ce_idx]->run();
-  }
-  DEBUG_PRINT("Compute engines initialized: %f\n", get_time());
-
-  // Compute
-  for (int wl_pushed = 0; wl_pushed < N / mpi_size; wl_pushed += PUSH_BATCH_SIZE) {
-    int wl_to_push = min(PUSH_BATCH_SIZE, N / mpi_size - wl_pushed);
-    for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
-      compute_engines[ce_idx]->push(wl_to_push / NGPU);
-    }
-  }
-
-  // Scatter input & initialize memory
-  DEBUG_PRINT("Scatter input: %f\n", get_time());
-  int scv_displacements[MAX_MPI_SIZE];
-  int scv_counts[MAX_MPI_SIZE];
-
-  for (int node_idx = 0; node_idx < mpi_size; ++node_idx) {
-    scv_displacements[node_idx] = node_idx * N / mpi_size * VOCAB_SIZE * MAX_LENGTH;
-    scv_counts[node_idx] = PUSH_BATCH_SIZE * VOCAB_SIZE * MAX_LENGTH;
-  }
-
-  for (int scv_idx = 0; scv_idx < N / mpi_size / NGPU; scv_idx += PUSH_BATCH_SIZE) {
-    for (int gpu_idx = 0; gpu_idx < NGPU; gpu_idx++) {
-      float *now_input = input_
-       + scv_idx * VOCAB_SIZE * MAX_LENGTH
-       + gpu_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH;
-      
-      MPI_Scatterv(
-        now_input, scv_counts, scv_displacements, MPI_FLOAT,
-        MPI_IN_PLACE, scv_counts[mpi_rank], MPI_FLOAT,
-        0, MPI_COMM_WORLD
-      );
-    }
-  }
-  DEBUG_PRINT("Scatter input done: %f\n", get_time());
-
-  // Wait completion
-  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
-    compute_engines[ce_idx]->join();
-  }
-  DEBUG_PRINT("Computation complete: %f\n", get_time());
-
-  // Gather output
-  MPI_Gather(
-    MPI_IN_PLACE, N / mpi_size, MPI_FLOAT,
-    output_, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD
-  );
-  DEBUG_PRINT("Gathered output: %f\n", get_time());
-
-}
-
-void classifier_nonroot(float *input_, float *output_, int N) {
-  // Initialize memory
-  DEBUG_PRINT("Init mem: %f\n", get_time());
-  if (input_ == nullptr) 
-    input_ = (float *) calloc(
-      N * VOCAB_SIZE * MAX_LENGTH / mpi_size, 
-      sizeof(float)
-    );
-  if (output_ == nullptr) 
-    output_ = (float *) calloc(N / mpi_size, sizeof(float));
-
-  // Start compute engines
-  DEBUG_PRINT("Init CE: %f\n", get_time());
-  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
-    compute_engines[ce_idx]->set_input(input_ + ce_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH);
-    compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
-    compute_engines[ce_idx]->run();
-  }
-
-  // Scatter input
-  DEBUG_PRINT("Scatter input: %f\n", get_time());
-  int scv_displacements[MAX_MPI_SIZE];
-  int scv_counts[MAX_MPI_SIZE];
-
-  for (int node_idx = 0; node_idx < mpi_size; ++node_idx) {
-    scv_displacements[node_idx] = node_idx * N / mpi_size * VOCAB_SIZE * MAX_LENGTH;
-    scv_counts[node_idx] = PUSH_BATCH_SIZE * VOCAB_SIZE * MAX_LENGTH;
-  }
-
-  for (int scv_idx = 0; scv_idx < N / mpi_size / NGPU; scv_idx += PUSH_BATCH_SIZE) {
-    for (int gpu_idx = 0; gpu_idx < NGPU; gpu_idx++) {
-      float *now_input = input_
-       + scv_idx * VOCAB_SIZE * MAX_LENGTH
-       + gpu_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH;
-      
-      MPI_Scatterv(
-        MPI_IN_PLACE, scv_counts, scv_displacements, MPI_FLOAT,
-        now_input, scv_counts[mpi_rank], MPI_FLOAT,
-        0, MPI_COMM_WORLD
-      );
-
-      compute_engines[gpu_idx]->push(PUSH_BATCH_SIZE);
-    }
-  }
-  DEBUG_PRINT("Scatter input done: %f\n", get_time());
-
-  // Wait completion
-  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
-    compute_engines[ce_idx]->join();
-  }
-  DEBUG_PRINT("Computation complete: %f\n", get_time());
-
-  // Gather output
-  MPI_Gather(
-    output_, N / mpi_size, MPI_FLOAT,
-    MPI_IN_PLACE, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD
-  );
-  DEBUG_PRINT("Gathered output: %f\n", get_time());
-}
-
 void classifier(float *input_, float *output_, int N) {
   DEBUG_PRINT("Start classifier: %f\n", get_time());
-  if (iam_root) classifier_root(input_, output_, N);
-  else classifier_nonroot(input_, output_, N);
+  if (iam_root) {
+    // Initialize CE
+    for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+      compute_engines[ce_idx]->set_input(input_ + ce_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH);
+      compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
+      compute_engines[ce_idx]->run();
+    }
+    DEBUG_PRINT("Compute engines initialized: %f\n", get_time());
+
+    // Compute
+    for (int wl_pushed = 0; wl_pushed < N / mpi_size; wl_pushed += PUSH_BATCH_SIZE) {
+      int wl_to_push = min(PUSH_BATCH_SIZE, N / mpi_size - wl_pushed);
+      for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+        compute_engines[ce_idx]->push(wl_to_push / NGPU);
+      }
+    }
+
+    // Scatter input & initialize memory
+    DEBUG_PRINT("Scatter input: %f\n", get_time());
+    int scv_displacements[MAX_MPI_SIZE];
+    int scv_counts[MAX_MPI_SIZE];
+
+    for (int node_idx = 0; node_idx < mpi_size; ++node_idx) {
+      scv_displacements[node_idx] = node_idx * N / mpi_size * VOCAB_SIZE * MAX_LENGTH;
+      scv_counts[node_idx] = PUSH_BATCH_SIZE * VOCAB_SIZE * MAX_LENGTH;
+    }
+
+    for (int scv_idx = 0; scv_idx < N / mpi_size / NGPU; scv_idx += PUSH_BATCH_SIZE) {
+      for (int gpu_idx = 0; gpu_idx < NGPU; gpu_idx++) {
+        float *now_input = input_
+        + scv_idx * VOCAB_SIZE * MAX_LENGTH
+        + gpu_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH;
+        
+        MPI_Scatterv(
+          now_input, scv_counts, scv_displacements, MPI_FLOAT,
+          MPI_IN_PLACE, scv_counts[mpi_rank], MPI_FLOAT,
+          0, MPI_COMM_WORLD
+        );
+      }
+    }
+    DEBUG_PRINT("Scatter input done: %f\n", get_time());
+
+    // Wait completion
+    for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+      compute_engines[ce_idx]->join();
+    }
+    DEBUG_PRINT("Computation complete: %f\n", get_time());
+
+    // Gather output
+    MPI_Gather(
+      MPI_IN_PLACE, N / mpi_size, MPI_FLOAT,
+      output_, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD
+    );
+    DEBUG_PRINT("Gathered output: %f\n", get_time());
+
+  }
+  else {
+    // Initialize memory
+    DEBUG_PRINT("Init mem: %f\n", get_time());
+    if (input_ == nullptr) 
+      input_ = (float *) calloc(
+        N * VOCAB_SIZE * MAX_LENGTH / mpi_size, 
+        sizeof(float)
+      );
+    if (output_ == nullptr) 
+      output_ = (float *) calloc(N / mpi_size, sizeof(float));
+
+    // Start compute engines
+    DEBUG_PRINT("Init CE: %f\n", get_time());
+    for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+      compute_engines[ce_idx]->set_input(input_ + ce_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH);
+      compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
+      compute_engines[ce_idx]->run();
+    }
+
+    // Scatter input
+    DEBUG_PRINT("Scatter input: %f\n", get_time());
+    int scv_displacements[MAX_MPI_SIZE];
+    int scv_counts[MAX_MPI_SIZE];
+
+    for (int node_idx = 0; node_idx < mpi_size; ++node_idx) {
+      scv_displacements[node_idx] = node_idx * N / mpi_size * VOCAB_SIZE * MAX_LENGTH;
+      scv_counts[node_idx] = PUSH_BATCH_SIZE * VOCAB_SIZE * MAX_LENGTH;
+    }
+
+    for (int scv_idx = 0; scv_idx < N / mpi_size / NGPU; scv_idx += PUSH_BATCH_SIZE) {
+      for (int gpu_idx = 0; gpu_idx < NGPU; gpu_idx++) {
+        float *now_input = input_
+        + scv_idx * VOCAB_SIZE * MAX_LENGTH
+        + gpu_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH;
+        
+        MPI_Scatterv(
+          MPI_IN_PLACE, scv_counts, scv_displacements, MPI_FLOAT,
+          now_input, scv_counts[mpi_rank], MPI_FLOAT,
+          0, MPI_COMM_WORLD
+        );
+
+        compute_engines[gpu_idx]->push(PUSH_BATCH_SIZE);
+      }
+    }
+    DEBUG_PRINT("Scatter input done: %f\n", get_time());
+
+    // Wait completion
+    for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+      compute_engines[ce_idx]->join();
+    }
+    DEBUG_PRINT("Computation complete: %f\n", get_time());
+
+    // Gather output
+    MPI_Gather(
+      output_, N / mpi_size, MPI_FLOAT,
+      MPI_IN_PLACE, N / mpi_size, MPI_FLOAT, 0, MPI_COMM_WORLD
+    );
+    DEBUG_PRINT("Gathered output: %f\n", get_time());
+  }
   DEBUG_PRINT("Finish classifier: %f\n", get_time());
 }
 
