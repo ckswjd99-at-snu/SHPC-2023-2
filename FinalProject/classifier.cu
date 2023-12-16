@@ -55,7 +55,7 @@ int checksum(float *buf, int N) {
 /** SECTION: Hyperparams **/
 #define MAX_MPI_SIZE 4
 
-#define PUSH_BATCH_SIZE 128
+#define PUSH_BATCH_SIZE 32
 #define POP_BATCH_SIZE 32
 #define COMPUTE_BATCH_SIZE 4
 

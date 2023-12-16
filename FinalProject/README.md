@@ -65,6 +65,7 @@ Measured by annotating code sections. (outdated)
 - No more Tensor type: 6175.81 input(s)/sec
 - Scatter into Scatterv: 5924.65 input(s)/sec
 - Networking & offloading interleaved: 8587.53 input(s)/sec
+- Fine-grained interleaving: 9022.954883 input(s)/sec
 
 ## Model Structure
 
