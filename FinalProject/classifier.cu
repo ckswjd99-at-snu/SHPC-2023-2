@@ -30,30 +30,6 @@ static int iam_root;
 
 /** SECTION: GPU manipulation **/
 #define NGPU    4
-static float *a_input_gpu[NGPU], *a_conv1_gpu[NGPU];
-static float *a_layernorm1_gpu[NGPU];
-static float *a_pool1_gpu[NGPU], *a_conv2_gpu[NGPU];
-static float *a_pool2_gpu[NGPU], *a_conv3_gpu[NGPU];
-static float *a_conv4_gpu[NGPU];
-static float *a_conv5_gpu[NGPU];
-static float *a_conv6_gpu[NGPU];
-static float *a_layernorm6_gpu[NGPU];
-static float *a_collapse_gpu[NGPU];
-static float *a_linear1_gpu[NGPU];
-static float *a_linear2_gpu[NGPU];
-static float *a_linear3_gpu[NGPU];
-
-static float *w_conv1_gpu[NGPU], *b_conv1_gpu[NGPU];
-static float *w_conv2_gpu[NGPU], *b_conv2_gpu[NGPU];
-static float *w_conv3_gpu[NGPU], *b_conv3_gpu[NGPU];
-static float *w_conv4_gpu[NGPU], *b_conv4_gpu[NGPU];
-static float *w_conv5_gpu[NGPU], *b_conv5_gpu[NGPU];
-static float *w_conv6_gpu[NGPU], *b_conv6_gpu[NGPU];
-static float *w_fc1_gpu[NGPU], *b_fc1_gpu[NGPU];
-static float *w_fc2_gpu[NGPU], *b_fc2_gpu[NGPU];
-static float *w_fc3_gpu[NGPU], *b_fc3_gpu[NGPU];
-static float *gamma_conv1_gpu[NGPU], *beta_conv1_gpu[NGPU];
-static float *gamma_conv6_gpu[NGPU], *beta_conv6_gpu[NGPU];
 
 
 /** SECTION: DEBUGGING **/
@@ -604,14 +580,33 @@ private:
   static void *run_func(void *arg);
   pthread_t thread;
 
-  // Parameters
-  Tensor *w_fc1, *w_fc2, *w_fc3,
-      *b_fc1, *b_fc2, *b_fc3, *gamma_conv1, *beta_conv1, *gamma_conv6, *beta_conv6;
-
   // Activations
-  Tensor *a_relu2, *a_pool2;
-  Tensor *a_conv6, *a_layernorm6, *a_relu6, *a_pool6;
+  float *a_input_gpu, *a_conv1_gpu;
+  float *a_layernorm1_gpu;
+  float *a_pool1_gpu, *a_conv2_gpu;
+  float *a_pool2_gpu, *a_conv3_gpu;
+  float *a_conv4_gpu;
+  float *a_conv5_gpu;
+  float *a_conv6_gpu;
+  float *a_layernorm6_gpu;
+  float *a_collapse_gpu;
+  float *a_linear1_gpu;
+  float *a_linear2_gpu;
+  float *a_linear3_gpu;
   Tensor *a_linear3;
+
+  // Parameters
+  float *w_conv1_gpu, *b_conv1_gpu;
+  float *w_conv2_gpu, *b_conv2_gpu;
+  float *w_conv3_gpu, *b_conv3_gpu;
+  float *w_conv4_gpu, *b_conv4_gpu;
+  float *w_conv5_gpu, *b_conv5_gpu;
+  float *w_conv6_gpu, *b_conv6_gpu;
+  float *w_fc1_gpu, *b_fc1_gpu;
+  float *w_fc2_gpu, *b_fc2_gpu;
+  float *w_fc3_gpu, *b_fc3_gpu;
+  float *gamma_conv1_gpu, *beta_conv1_gpu;
+  float *gamma_conv6_gpu, *beta_conv6_gpu;
 };
 
 ComputeEngine *compute_engines[NGPU];
@@ -637,131 +632,131 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_, int gpu_idx_) {
 
   // Initialize parameters
   CHECK_CUDA(cudaSetDevice(_gpu_idx));
-  CHECK_CUDA(cudaMalloc(&a_input_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 70 * 1014 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_conv1_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 256 * 1008 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_layernorm1_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 256 * 1008 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_pool1_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 256 * 336 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_conv2_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 256 * 330 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_pool2_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 256 * 110 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_conv3_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 256 * 108 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_conv4_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 256 * 106 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_conv5_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 256 * 104 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_conv6_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 256 * 102 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_layernorm6_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 256 * 102 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_collapse_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 8704 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_linear1_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 1024 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_linear2_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 1024 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&a_linear3_gpu[_gpu_idx], COMPUTE_BATCH_SIZE * 4 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_input_gpu, COMPUTE_BATCH_SIZE * 70 * 1014 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_conv1_gpu, COMPUTE_BATCH_SIZE * 256 * 1008 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_layernorm1_gpu, COMPUTE_BATCH_SIZE * 256 * 1008 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_pool1_gpu, COMPUTE_BATCH_SIZE * 256 * 336 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_conv2_gpu, COMPUTE_BATCH_SIZE * 256 * 330 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_pool2_gpu, COMPUTE_BATCH_SIZE * 256 * 110 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_conv3_gpu, COMPUTE_BATCH_SIZE * 256 * 108 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_conv4_gpu, COMPUTE_BATCH_SIZE * 256 * 106 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_conv5_gpu, COMPUTE_BATCH_SIZE * 256 * 104 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_conv6_gpu, COMPUTE_BATCH_SIZE * 256 * 102 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_layernorm6_gpu, COMPUTE_BATCH_SIZE * 256 * 102 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_collapse_gpu, COMPUTE_BATCH_SIZE * 8704 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_linear1_gpu, COMPUTE_BATCH_SIZE * 1024 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_linear2_gpu, COMPUTE_BATCH_SIZE * 1024 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&a_linear3_gpu, COMPUTE_BATCH_SIZE * 4 * sizeof(float)));
   
-  CHECK_CUDA(cudaMalloc(&w_conv1_gpu[_gpu_idx], 256 * 70 * 7 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&b_conv1_gpu[_gpu_idx], 256 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&w_conv2_gpu[_gpu_idx], 256 * 256 * 7 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&b_conv2_gpu[_gpu_idx], 256 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&w_conv3_gpu[_gpu_idx], 256 * 256 * 3 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&b_conv3_gpu[_gpu_idx], 256 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&w_conv4_gpu[_gpu_idx], 256 * 256 * 3 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&b_conv4_gpu[_gpu_idx], 256 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&w_conv5_gpu[_gpu_idx], 256 * 256 * 3 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&b_conv5_gpu[_gpu_idx], 256 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&w_conv6_gpu[_gpu_idx], 256 * 256 * 3 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&b_conv6_gpu[_gpu_idx], 256 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&w_fc1_gpu[_gpu_idx], 1024 * 8704 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&b_fc1_gpu[_gpu_idx], 1024 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&w_fc2_gpu[_gpu_idx], 1024 * 1024 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&b_fc2_gpu[_gpu_idx], 1024 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&w_fc3_gpu[_gpu_idx], 4 * 1024 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&b_fc3_gpu[_gpu_idx], 4 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&gamma_conv1_gpu[_gpu_idx], 256 * 1008 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&beta_conv1_gpu[_gpu_idx], 256 * 1008 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&gamma_conv6_gpu[_gpu_idx], 256 * 102 * sizeof(float)));
-  CHECK_CUDA(cudaMalloc(&beta_conv6_gpu[_gpu_idx], 256 * 102 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&w_conv1_gpu, 256 * 70 * 7 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&b_conv1_gpu, 256 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&w_conv2_gpu, 256 * 256 * 7 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&b_conv2_gpu, 256 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&w_conv3_gpu, 256 * 256 * 3 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&b_conv3_gpu, 256 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&w_conv4_gpu, 256 * 256 * 3 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&b_conv4_gpu, 256 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&w_conv5_gpu, 256 * 256 * 3 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&b_conv5_gpu, 256 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&w_conv6_gpu, 256 * 256 * 3 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&b_conv6_gpu, 256 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&w_fc1_gpu, 1024 * 8704 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&b_fc1_gpu, 1024 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&w_fc2_gpu, 1024 * 1024 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&b_fc2_gpu, 1024 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&w_fc3_gpu, 4 * 1024 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&b_fc3_gpu, 4 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&gamma_conv1_gpu, 256 * 1008 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&beta_conv1_gpu, 256 * 1008 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&gamma_conv6_gpu, 256 * 102 * sizeof(float)));
+  CHECK_CUDA(cudaMalloc(&beta_conv6_gpu, 256 * 102 * sizeof(float)));
 
   CHECK_CUDA(cudaMemcpyAsync(
-    w_conv1_gpu[_gpu_idx], parameter_ + OFFSET0, 256 * 70 * 7 * sizeof(float),
+    w_conv1_gpu, parameter_ + OFFSET0, 256 * 70 * 7 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    b_conv1_gpu[_gpu_idx], parameter_ + OFFSET1, 256 * sizeof(float),
+    b_conv1_gpu, parameter_ + OFFSET1, 256 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    gamma_conv1_gpu[_gpu_idx], parameter_ + OFFSET2, 256 * 1008 * sizeof(float),
+    gamma_conv1_gpu, parameter_ + OFFSET2, 256 * 1008 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    beta_conv1_gpu[_gpu_idx], parameter_ + OFFSET3, 256 * 1008 * sizeof(float),
+    beta_conv1_gpu, parameter_ + OFFSET3, 256 * 1008 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    w_conv2_gpu[_gpu_idx], parameter_ + OFFSET4, 256 * 256 * 7 * sizeof(float),
+    w_conv2_gpu, parameter_ + OFFSET4, 256 * 256 * 7 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    b_conv2_gpu[_gpu_idx], parameter_ + OFFSET5, 256 * sizeof(float),
+    b_conv2_gpu, parameter_ + OFFSET5, 256 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    w_conv3_gpu[_gpu_idx], parameter_ + OFFSET6, 256 * 256 * 3 * sizeof(float),
+    w_conv3_gpu, parameter_ + OFFSET6, 256 * 256 * 3 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    b_conv3_gpu[_gpu_idx], parameter_ + OFFSET7, 256 * sizeof(float),
+    b_conv3_gpu, parameter_ + OFFSET7, 256 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    w_conv4_gpu[_gpu_idx], parameter_ + OFFSET8, 256 * 256 * 3 * sizeof(float),
+    w_conv4_gpu, parameter_ + OFFSET8, 256 * 256 * 3 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    b_conv4_gpu[_gpu_idx], parameter_ + OFFSET9, 256 * sizeof(float),
+    b_conv4_gpu, parameter_ + OFFSET9, 256 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    w_conv5_gpu[_gpu_idx], parameter_ + OFFSET10, 256 * 256 * 3 * sizeof(float),
+    w_conv5_gpu, parameter_ + OFFSET10, 256 * 256 * 3 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    b_conv5_gpu[_gpu_idx], parameter_ + OFFSET11, 256 * sizeof(float),
+    b_conv5_gpu, parameter_ + OFFSET11, 256 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    w_conv6_gpu[_gpu_idx], parameter_ + OFFSET12, 256 * 256 * 3 * sizeof(float),
+    w_conv6_gpu, parameter_ + OFFSET12, 256 * 256 * 3 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    b_conv6_gpu[_gpu_idx], parameter_ + OFFSET13, 256 * sizeof(float),
+    b_conv6_gpu, parameter_ + OFFSET13, 256 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    gamma_conv6_gpu[_gpu_idx], parameter_ + OFFSET14, 256 * 102 * sizeof(float),
+    gamma_conv6_gpu, parameter_ + OFFSET14, 256 * 102 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    beta_conv6_gpu[_gpu_idx], parameter_ + OFFSET15, 256 * 102 * sizeof(float),
+    beta_conv6_gpu, parameter_ + OFFSET15, 256 * 102 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    w_fc1_gpu[_gpu_idx], parameter_ + OFFSET16, 1024 * 8704 * sizeof(float),
+    w_fc1_gpu, parameter_ + OFFSET16, 1024 * 8704 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    b_fc1_gpu[_gpu_idx], parameter_ + OFFSET17, 1024 * sizeof(float),
+    b_fc1_gpu, parameter_ + OFFSET17, 1024 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    w_fc2_gpu[_gpu_idx], parameter_ + OFFSET18, 1024 * 1024 * sizeof(float),
+    w_fc2_gpu, parameter_ + OFFSET18, 1024 * 1024 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    b_fc2_gpu[_gpu_idx], parameter_ + OFFSET19, 1024 * sizeof(float),
+    b_fc2_gpu, parameter_ + OFFSET19, 1024 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    w_fc3_gpu[_gpu_idx], parameter_ + OFFSET20, 4 * 1024 * sizeof(float),
+    w_fc3_gpu, parameter_ + OFFSET20, 4 * 1024 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   CHECK_CUDA(cudaMemcpyAsync(
-    b_fc3_gpu[_gpu_idx], parameter_ + OFFSET21, 4 * sizeof(float),
+    b_fc3_gpu, parameter_ + OFFSET21, 4 * sizeof(float),
     cudaMemcpyHostToDevice, _gpu_stream
   ));
   
@@ -826,7 +821,7 @@ void ComputeEngine::inference(int num_input) {
     // Conv block 1 : Conv1d + LayerNorm + ReLU + MaxPool1d
     {
       CHECK_CUDA(cudaMemcpyAsync(
-        a_input_gpu[_gpu_idx], input_to_process + batch * VOCAB_SIZE * MAX_LENGTH,
+        a_input_gpu, input_to_process + batch * VOCAB_SIZE * MAX_LENGTH,
         now_batch_size * 70 * 1014 * sizeof(float),
         cudaMemcpyHostToDevice, _gpu_stream
       ));
@@ -834,18 +829,18 @@ void ComputeEngine::inference(int num_input) {
       dim3 grid(CEIL_DIV(256, C1D_K7_BM), CEIL_DIV(1008, C1D_K7_BN));
       dim3 block(C1D_K7_BM * C1D_K7_BN);
       conv1d_k7_cuda<<<grid, block, 0, _gpu_stream>>>(
-        a_input_gpu[_gpu_idx], w_conv1_gpu[_gpu_idx], b_conv1_gpu[_gpu_idx], a_conv1_gpu[_gpu_idx],
+        a_input_gpu, w_conv1_gpu, b_conv1_gpu, a_conv1_gpu,
         now_batch_size, 1008, 70, 256,
         0
       );
 
       layernorm_cuda<<<now_batch_size, LNORM_TPB, 0, _gpu_stream>>>(
-        a_conv1_gpu[_gpu_idx], gamma_conv1_gpu[_gpu_idx], beta_conv1_gpu[_gpu_idx], a_layernorm1_gpu[_gpu_idx],
+        a_conv1_gpu, gamma_conv1_gpu, beta_conv1_gpu, a_layernorm1_gpu,
         now_batch_size, 256, 1008
       );
 
       maxpool1d_k3_cuda<<<now_batch_size, 1008/3, 0, _gpu_stream>>>(
-        a_layernorm1_gpu[_gpu_idx], a_pool1_gpu[_gpu_idx],
+        a_layernorm1_gpu, a_pool1_gpu,
         now_batch_size, 256, 1008,
         1
       );
@@ -856,13 +851,13 @@ void ComputeEngine::inference(int num_input) {
       dim3 grid(CEIL_DIV(256, C1D_K7_BM), CEIL_DIV(330, C1D_K7_BN));
       dim3 block(C1D_K7_BM * C1D_K7_BN);
       conv1d_k7_cuda<<<grid, block, 0, _gpu_stream>>>(
-        a_pool1_gpu[_gpu_idx], w_conv2_gpu[_gpu_idx], b_conv2_gpu[_gpu_idx], a_conv2_gpu[_gpu_idx],
+        a_pool1_gpu, w_conv2_gpu, b_conv2_gpu, a_conv2_gpu,
         now_batch_size, 330, 256, 256,
         1
       );
 
       maxpool1d_k3_cuda<<<now_batch_size, 330/3, 0, _gpu_stream>>>(
-        a_conv2_gpu[_gpu_idx], a_pool2_gpu[_gpu_idx],
+        a_conv2_gpu, a_pool2_gpu,
         now_batch_size, 256, 330,
         0
       );
@@ -873,7 +868,7 @@ void ComputeEngine::inference(int num_input) {
       dim3 grid(CEIL_DIV(256, C1D_K3_BM), CEIL_DIV(108, C1D_K3_BN));
       dim3 block(C1D_K3_BM * C1D_K3_BN);
       conv1d_k3_cuda<<<grid, block, 0, _gpu_stream>>>(
-        a_pool2_gpu[_gpu_idx], w_conv3_gpu[_gpu_idx], b_conv3_gpu[_gpu_idx], a_conv3_gpu[_gpu_idx],
+        a_pool2_gpu, w_conv3_gpu, b_conv3_gpu, a_conv3_gpu,
         now_batch_size, 108, 256, 256,
         1
       );
@@ -886,7 +881,7 @@ void ComputeEngine::inference(int num_input) {
       dim3 grid(CEIL_DIV(256, C1D_K3_BM), CEIL_DIV(106, C1D_K3_BN));
       dim3 block(C1D_K3_BM * C1D_K3_BN);
       conv1d_k3_cuda<<<grid, block, 0, _gpu_stream>>>(
-        a_conv3_gpu[_gpu_idx], w_conv4_gpu[_gpu_idx], b_conv4_gpu[_gpu_idx], a_conv4_gpu[_gpu_idx],
+        a_conv3_gpu, w_conv4_gpu, b_conv4_gpu, a_conv4_gpu,
         now_batch_size, 106, 256, 256,
         1
       );
@@ -897,7 +892,7 @@ void ComputeEngine::inference(int num_input) {
       dim3 grid(CEIL_DIV(256, C1D_K3_BM), CEIL_DIV(104, C1D_K3_BN));
       dim3 block(C1D_K3_BM * C1D_K3_BN);
       conv1d_k3_cuda<<<grid, block, 0, _gpu_stream>>>(
-        a_conv4_gpu[_gpu_idx], w_conv5_gpu[_gpu_idx], b_conv5_gpu[_gpu_idx], a_conv5_gpu[_gpu_idx],
+        a_conv4_gpu, w_conv5_gpu, b_conv5_gpu, a_conv5_gpu,
         now_batch_size, 104, 256, 256,
         1
       );
@@ -909,18 +904,18 @@ void ComputeEngine::inference(int num_input) {
       dim3 grid(CEIL_DIV(256, C1D_K3_BM), CEIL_DIV(102, C1D_K3_BN));
       dim3 block(C1D_K3_BM * C1D_K3_BN);
       conv1d_k3_cuda<<<grid, block, 0, _gpu_stream>>>(
-        a_conv5_gpu[_gpu_idx], w_conv6_gpu[_gpu_idx], b_conv6_gpu[_gpu_idx], a_conv6_gpu[_gpu_idx],
+        a_conv5_gpu, w_conv6_gpu, b_conv6_gpu, a_conv6_gpu,
         now_batch_size, 102, 256, 256,
         0
       );
 
       layernorm_cuda<<<now_batch_size, LNORM_TPB, 0, _gpu_stream>>>(
-        a_conv6_gpu[_gpu_idx], gamma_conv6_gpu[_gpu_idx], beta_conv6_gpu[_gpu_idx], a_layernorm6_gpu[_gpu_idx],
+        a_conv6_gpu, gamma_conv6_gpu, beta_conv6_gpu, a_layernorm6_gpu,
         now_batch_size, 256, 102
       );
 
       maxpool1d_k3_cuda<<<now_batch_size, 102/3, 0, _gpu_stream>>>(
-        a_layernorm6_gpu[_gpu_idx], a_collapse_gpu[_gpu_idx],
+        a_layernorm6_gpu, a_collapse_gpu,
         now_batch_size, 256, 102,
         1
       );
@@ -932,7 +927,7 @@ void ComputeEngine::inference(int num_input) {
       dim3 grid(CEIL_DIV(now_batch_size, LIN_REG_BM), CEIL_DIV(1024, LIN_REG_BN));
       dim3 block(LIN_REG_BM, LIN_REG_BN);
       linear_reg_cuda<<<grid, block, 0, _gpu_stream>>>(
-        a_collapse_gpu[_gpu_idx], w_fc1_gpu[_gpu_idx], b_fc1_gpu[_gpu_idx], a_linear1_gpu[_gpu_idx],
+        a_collapse_gpu, w_fc1_gpu, b_fc1_gpu, a_linear1_gpu,
         now_batch_size, 8704, 1024,
         1
       );
@@ -943,7 +938,7 @@ void ComputeEngine::inference(int num_input) {
       dim3 grid(CEIL_DIV(now_batch_size, LIN_REG_BM), CEIL_DIV(1024, LIN_REG_BN));
       dim3 block(LIN_REG_BM, LIN_REG_BN);
       linear_reg_cuda<<<grid, block, 0, _gpu_stream>>>(
-        a_linear1_gpu[_gpu_idx], w_fc2_gpu[_gpu_idx], b_fc2_gpu[_gpu_idx], a_linear2_gpu[_gpu_idx],
+        a_linear1_gpu, w_fc2_gpu, b_fc2_gpu, a_linear2_gpu,
         now_batch_size, 1024, 1024,
         1
       );
@@ -954,13 +949,13 @@ void ComputeEngine::inference(int num_input) {
       dim3 grid(CEIL_DIV(now_batch_size, LIN_NAIVE_BM), CEIL_DIV(4, LIN_NAIVE_BN));
       dim3 block(LIN_NAIVE_BM, LIN_NAIVE_BN);
       linear_naive_cuda<<<grid, block, 0, _gpu_stream>>>(
-        a_linear2_gpu[_gpu_idx], w_fc3_gpu[_gpu_idx], b_fc3_gpu[_gpu_idx], a_linear3_gpu[_gpu_idx],
+        a_linear2_gpu, w_fc3_gpu, b_fc3_gpu, a_linear3_gpu,
         now_batch_size, 1024, 4,
         0
       );
 
       CHECK_CUDA(cudaMemcpyAsync(
-        a_linear3->buf, a_linear3_gpu[_gpu_idx], now_batch_size * 4 * sizeof(float),
+        a_linear3->buf, a_linear3_gpu, now_batch_size * 4 * sizeof(float),
         cudaMemcpyDeviceToHost, _gpu_stream
       ));
 
