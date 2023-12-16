@@ -1068,17 +1068,11 @@ void classifier_nonroot(float *input_, float *output_, int N) {
         now_input, scv_counts[mpi_rank], MPI_FLOAT,
         0, MPI_COMM_WORLD
       );
+
+      compute_engines[gpu_idx]->push(PUSH_BATCH_SIZE);
     }
   }
   DEBUG_PRINT("Scatter input done\n");
-
-  // Compute
-  for (int wl_pushed = 0; wl_pushed < N / mpi_size; wl_pushed += PUSH_BATCH_SIZE) {
-    int wl_to_push = min(PUSH_BATCH_SIZE, N / mpi_size - wl_pushed);
-    for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
-      compute_engines[ce_idx]->push(wl_to_push / NGPU);
-    }
-  }
 
   // Wait completion
   for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {

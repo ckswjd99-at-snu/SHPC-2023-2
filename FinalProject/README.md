@@ -64,6 +64,7 @@ Measured by annotating code sections. (outdated)
 - Memory cleanup: 5865.32 input(s)/sec
 - No more Tensor type: 6175.81 input(s)/sec
 - Scatter into Scatterv: 5924.65 input(s)/sec
+- Networking & offloading interleaved: 8587.53 input(s)/sec
 
 ## Model Structure
 
