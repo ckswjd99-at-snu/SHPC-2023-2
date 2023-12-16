@@ -56,7 +56,7 @@ int checksum(float *buf, int N) {
 #define ROOT_INPUT_N    (2048 + 256 * 3)
 #define NONROOT_INPUT_N (2048 - 256)
 
-#define POP_BATCH_SIZE 16
+#define POP_BATCH_SIZE 32
 #define COMPUTE_BATCH_SIZE 4
 
 #define C1D_K3_BM 16
@@ -74,55 +74,10 @@ int checksum(float *buf, int N) {
 #define LIN_REG_BN 16
 #define LIN_REG_BK 32
 
-#define LNORM_CHAN 256  // FIXED
+#define LNORM_CHAN 256  // NEVER CHANGE!
 #define LNORM_CHPT 2
-#define LNORM_TPB  (LNORM_CHAN/LNORM_CHPT)  // FIXED
+#define LNORM_TPB  (LNORM_CHAN/LNORM_CHPT)  // NEVER CHANGE!
 
-
-/** SECTION: Tensor **/
-
-// Multi-dimensional matrix containing fp32 elements
-struct Tensor {
-  Tensor(std::vector<int> shape_);
-  Tensor(std::vector<int> shape_, float *buf_);
-  ~Tensor();
-  int num_elem();
-  void fill_zeros();
-
-  float *buf = nullptr;
-  int ndim = 0;
-  int shape[4];
-};
-
-Tensor::Tensor(std::vector<int> shape_) {
-  ndim = shape_.size();
-  for (int i = 0; i < ndim; ++i) { shape[i] = shape_[i]; }
-  int N_ = num_elem();
-  buf = (float *) calloc(N_, sizeof(float));
-}
-
-Tensor::Tensor(std::vector<int> shape_, float *buf_) {
-  ndim = shape_.size();
-  for (int i = 0; i < ndim; ++i) { shape[i] = shape_[i]; }
-  int N_ = num_elem();
-  buf = (float *) calloc(N_, sizeof(float));
-  for (int n = 0; n < N_; ++n) { buf[n] = buf_[n]; }
-}
-
-Tensor::~Tensor() {
-  if (buf != nullptr) free(buf);
-}
-
-int Tensor::num_elem() {
-  int sz = 1;
-  for (int i = 0; i < ndim; ++i) { sz *= shape[i]; }
-  return sz;
-}
-
-void Tensor::fill_zeros() {
-  int N_ = num_elem();
-  for (int n = 0; n < N_; ++n) { buf[n] = 0.0; }
-}
 
 /** SECTION: Kernels **/
 
@@ -537,7 +492,24 @@ static __global__ void maxpool1d_k3_cuda(
     if (relu && mx < 0.0f) mx = 0.0f;
     output[now_batch * single_output_size + oc * len_output + now_ol] = mx;
   }
+}
 
+static __global__ void argmax_f4_inplace_cuda(float *input) {
+  int now_batch = threadIdx.x;
+  int single_input_size = 4;
+  float *input_offset = input + now_batch * single_input_size;
+
+  if (blockIdx.x == 0) {
+    int max_idx = 0;
+    float max_val = -1e99;
+    for (int i = 0; i < 4; ++i) {
+      if (input_offset[i] > max_val) {
+        max_val = input_offset[i];
+        max_idx = i;
+      }
+    }
+    input_offset[0] = max_idx;
+  }
 }
 
 
@@ -593,7 +565,7 @@ private:
   float *a_linear1_gpu;
   float *a_linear2_gpu;
   float *a_linear3_gpu;
-  Tensor *a_linear3;
+  float *a_linear3;
 
   // Parameters
   float *w_conv1_gpu, *b_conv1_gpu;
@@ -764,14 +736,14 @@ ComputeEngine::ComputeEngine(float *parameter_, int num_input_, int gpu_idx_) {
   
 
   // Initialize activations
-  a_linear3 = new Tensor({COMPUTE_BATCH_SIZE, 4});
+  a_linear3 = (float *)calloc(COMPUTE_BATCH_SIZE * 4, sizeof(float));
 }
 
 ComputeEngine::~ComputeEngine() {
   pthread_mutex_destroy(&mutex_queue);
   pthread_cond_destroy(&cond_queue);
 
-  delete a_linear3;
+  free(a_linear3);
 }
 
 void ComputeEngine::set_input(float *input_buf_) {
@@ -957,28 +929,21 @@ void ComputeEngine::inference(float *popped_input) {
         0
       );
 
+      argmax_f4_inplace_cuda<<<1, now_batch_size, 0, _gpu_stream>>>(a_linear3_gpu);
+
       CHECK_CUDA(cudaMemcpyAsync(
-        a_linear3->buf, a_linear3_gpu, now_batch_size * 4 * sizeof(float),
+        a_linear3, a_linear3_gpu, now_batch_size * 4 * sizeof(float),
         cudaMemcpyDeviceToHost, _gpu_stream
       ));
 
       CHECK_CUDA(cudaStreamSynchronize(_gpu_stream));
     }
 
-    int single_logit_size = a_linear3->num_elem() / now_batch_size;
-
     for (int b = 0; b < now_batch_size; b++) {
-      float max_val = -1e99f;
-      int max_idx = 0;
-      for (int i = 0; i < single_logit_size; ++i) {
-        if (a_linear3->buf[b * single_logit_size + i] > max_val) {
-          max_val = a_linear3->buf[b * single_logit_size + i];
-          max_idx = i;
-        }
-      }
-      output_buf[num_input_processed++] = (float)max_idx;
+      output_buf[num_input_processed + b] = a_linear3[b * 4];
     }
 
+    num_input_processed = num_input_processed + now_batch_size;
   }
 }
 
@@ -1012,6 +977,14 @@ void initialize_classifier(float *parameter, int N) {
 }
 
 void classifier_root(float *input_, float *output_, int N) {
+  // Compute
+  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
+    compute_engines[ce_idx]->set_input(input_ + ce_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH);
+    compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
+    compute_engines[ce_idx]->run();
+    compute_engines[ce_idx]->push(N / mpi_size / NGPU);
+  }
+
   // Scatter input & initialize memory
   DEBUG_PRINT("Scatter input\n");
   MPI_Scatter(
@@ -1020,14 +993,6 @@ void classifier_root(float *input_, float *output_, int N) {
     0, MPI_COMM_WORLD
   );
   DEBUG_PRINT("Scatter input done\n");
-  
-  // Compute
-  for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
-    compute_engines[ce_idx]->set_input(input_ + ce_idx * N / mpi_size / NGPU * VOCAB_SIZE * MAX_LENGTH);
-    compute_engines[ce_idx]->set_output(output_ + ce_idx * N / mpi_size / NGPU);
-    compute_engines[ce_idx]->run();
-    compute_engines[ce_idx]->push(N / mpi_size / NGPU);
-  }
 
   for (int ce_idx = 0; ce_idx < NGPU; ++ce_idx) {
     compute_engines[ce_idx]->join();
@@ -1042,7 +1007,7 @@ void classifier_root(float *input_, float *output_, int N) {
 }
 
 void classifier_nonroot(float *input_, float *output_, int N) {
-  // Scatter input & initialize memory
+  // Initialize memory
   DEBUG_PRINT("Scatter input\n");
   if (input_ == nullptr) 
     input_ = (float *) calloc(
@@ -1052,6 +1017,7 @@ void classifier_nonroot(float *input_, float *output_, int N) {
   if (output_ == nullptr) 
     output_ = (float *) calloc(N / mpi_size, sizeof(float));
 
+  // Scatter input
   MPI_Scatter(
     MPI_IN_PLACE, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT,
     input_, N * VOCAB_SIZE * MAX_LENGTH / mpi_size, MPI_FLOAT, 

@@ -62,6 +62,7 @@ Measured by annotating code sections. (outdated)
 - Naive linear normalization: 4241.36 input(s)/sec
 - Naive maxpool1d: 5266.67 input(s)/sec
 - Memory cleanup: 5865.32 input(s)/sec
+- No more Tensor type: 6014.10 input(s)/sec
 
 ## Model Structure
 
