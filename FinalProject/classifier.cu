@@ -541,64 +541,26 @@ static __global__ void layernorm_cuda(
   
 }
 
+static __global__ void maxpool1d_k3_cuda(
+  float *input, float *output,
+  int num_batch, int num_channels, int len_input,
+  int relu
+) {
+  int POOL_SIZE = 3;
+  int single_input_size = num_channels * len_input;
+  int single_output_size = num_channels * (len_input / POOL_SIZE);
+  int len_output = len_input / POOL_SIZE;
 
-/** SECTION: Operators **/
-
-void maxpool1d(Tensor *input, Tensor *output, int kernel_size, int stride, int relu) {
-  int B = input->shape[0];
-  int IL = input->shape[2];
-  int OC = output->shape[1];
-  int OL = output->shape[2];
-
-  int single_input_size = input->num_elem() / B;
-  int single_output_size = output->num_elem() / B;
-
-  for (int batch = 0; batch < B; batch++) {
-    for (int oc = 0; oc < OC; ++oc) {
-      for (int ol = 0; ol < OL; ++ol) {
-        float mx = -1e99;
-        for (int ks = 0; ks < kernel_size; ++ks) {
-          float val = input->buf[batch * single_input_size + oc * IL + ks + ol * stride];
-          if (val > mx) mx = val;
-        }
-        if (relu && mx < 0.0f) mx = 0.0f;
-        output->buf[batch * single_output_size + oc * OL + ol] = mx;
-      }
+  int now_batch = blockIdx.x;
+  int now_ol = threadIdx.x;
+  for (int oc = 0; oc < num_channels; ++oc) {
+    float mx = -1e99;
+    for (int ks = 0; ks < POOL_SIZE; ++ks) {
+      float val = input[now_batch * single_input_size + oc * len_input + ks + now_ol * POOL_SIZE];
+      if (val > mx) mx = val;
     }
-  }
-}
-
-void collapse(Tensor *input, Tensor *output) {
-  for (int i = 0; i < input->num_elem(); ++i) {
-    output->buf[i] = input->buf[i];
-  }
-}
-
-void layernorm(Tensor *input, Tensor *gamma, Tensor *beta, Tensor *output) {
-  int B = input->shape[0];
-
-  int single_input_size = input->num_elem() / B;
-  int single_output_size = output->num_elem() / B;
-
-  for (int batch = 0; batch < B; batch++) {
-    // E[X], E[X^2]
-    float sum1 = 0.0f, sum2 = 0.0f;
-    for (int i = 0; i < single_input_size; ++i) {
-        sum1 += input->buf[batch * single_input_size + i];
-        sum2 += input->buf[batch * single_input_size + i] * input->buf[batch * single_input_size + i];
-    }
-    float mean1 = sum1 / (float)single_input_size;
-    float mean2 = sum2 / (float)single_input_size;
-
-    // V[X]
-    float var = mean2 - mean1 * mean1; 
-
-    // Normalization
-    for (int i = 0; i < single_output_size; ++i) {
-      output->buf[batch * single_output_size + i]
-       = (input->buf[batch * single_input_size + i] - mean1)
-       / sqrtf(var + 1e-5) * gamma->buf[i] + beta->buf[i];
-    }
+    if (relu && mx < 0.0f) mx = 0.0f;
+    output[now_batch * single_output_size + oc * len_output + now_ol] = mx;
   }
 
 }
@@ -918,24 +880,15 @@ void ComputeEngine::inference(int num_input) {
         now_batch_size, 256, 1008
       );
 
-      CHECK_CUDA(cudaMemcpyAsync(
-        a_layernorm1->buf, a_layernorm1_gpu[gpu_idx], now_batch_size * 256 * 1008 * sizeof(float),
-        cudaMemcpyDeviceToHost, streams[gpu_idx]
-      ));
-
-      CHECK_CUDA(cudaStreamSynchronize(streams[gpu_idx]));
-
-      // layernorm(a_conv1, gamma_conv1, beta_conv1, a_layernorm1);
-      maxpool1d(a_layernorm1, a_pool1, 3, 3, 1);
+      maxpool1d_k3_cuda<<<now_batch_size, 1008/3, 0, streams[gpu_idx]>>>(
+        a_layernorm1_gpu[gpu_idx], a_pool1_gpu[gpu_idx],
+        now_batch_size, 256, 1008,
+        1
+      );
     }
 
     // Conv block 2 : Conv1d + ReLU + MaxPool1d
     {
-      CHECK_CUDA(cudaMemcpyAsync(
-        a_pool1_gpu[gpu_idx], a_pool1->buf, now_batch_size * 256 * 336 * sizeof(float),
-        cudaMemcpyHostToDevice, streams[gpu_idx]
-      ));
-
       dim3 grid(CEIL_DIV(256, C1D_K7_BM), CEIL_DIV(330, C1D_K7_BN));
       dim3 block(C1D_K7_BM * C1D_K7_BN);
       conv1d_k7_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
@@ -944,23 +897,15 @@ void ComputeEngine::inference(int num_input) {
         1
       );
 
-      CHECK_CUDA(cudaMemcpyAsync(
-        a_relu2->buf, a_conv2_gpu[gpu_idx], now_batch_size * 256 * 330 * sizeof(float),
-        cudaMemcpyDeviceToHost, streams[gpu_idx]
-      ));
-
-      CHECK_CUDA(cudaStreamSynchronize(streams[gpu_idx]));
-
-      maxpool1d(a_relu2, a_pool2, 3, 3, 0);
+      maxpool1d_k3_cuda<<<now_batch_size, 330/3, 0, streams[gpu_idx]>>>(
+        a_conv2_gpu[gpu_idx], a_pool2_gpu[gpu_idx],
+        now_batch_size, 256, 330,
+        0
+      );
     }
 
     // Conv block 3 : Conv1d + ReLU
     {
-      CHECK_CUDA(cudaMemcpyAsync(
-        a_pool2_gpu[gpu_idx], a_pool2->buf, now_batch_size * 256 * 110 * sizeof(float),
-        cudaMemcpyHostToDevice, streams[gpu_idx]
-      ));
-
       dim3 grid(CEIL_DIV(256, C1D_K3_BM), CEIL_DIV(108, C1D_K3_BN));
       dim3 block(C1D_K3_BM * C1D_K3_BN);
       conv1d_k3_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
@@ -1010,22 +955,16 @@ void ComputeEngine::inference(int num_input) {
         now_batch_size, 256, 102
       );
 
-      CHECK_CUDA(cudaMemcpyAsync(
-        a_layernorm6->buf, a_layernorm6_gpu[gpu_idx], now_batch_size * 256 * 102 * sizeof(float),
-        cudaMemcpyDeviceToHost, streams[gpu_idx]
-      ));
+      maxpool1d_k3_cuda<<<now_batch_size, 102/3, 0, streams[gpu_idx]>>>(
+        a_layernorm6_gpu[gpu_idx], a_collapse_gpu[gpu_idx],
+        now_batch_size, 256, 102,
+        1
+      );
 
-      CHECK_CUDA(cudaStreamSynchronize(streams[gpu_idx]));
     }
-    maxpool1d(a_layernorm6, a_pool6, 3, 3, 1);
 
     // FC block 1 : Linear + ReLU
     {
-      CHECK_CUDA(cudaMemcpyAsync(
-        a_collapse_gpu[gpu_idx], a_pool6->buf, now_batch_size * 8704 * sizeof(float),
-        cudaMemcpyHostToDevice, streams[gpu_idx]
-      ));
-
       dim3 grid(CEIL_DIV(now_batch_size, LIN_REG_BM), CEIL_DIV(1024, LIN_REG_BN));
       dim3 block(LIN_REG_BM, LIN_REG_BN);
       linear_reg_cuda<<<grid, block, 0, streams[gpu_idx]>>>(
