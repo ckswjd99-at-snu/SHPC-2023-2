@@ -10,7 +10,7 @@
 \end{figure}
 
 총 8192개의 input을 4개 노드에서 연산하도록 하여 최고 
-\textbf{9345.39 input(s)/sec}의 성능을 달성하였다[Fig.~\ref{fig:best_record}].
+\textbf{9399.12 input(s)/sec}의 성능을 달성하였다[Fig.~\ref{fig:best_record}].
 
 \subsection{Implementation}
 Root 노드는 MPI를 이용하여 나머지 노드에 input을 분배한다.
@@ -31,7 +31,7 @@ input을 분산하는 시간에 비해 매우 작으며, 이는 무시할 수 �
 slurm에 의해 배정되는 노드의 종류나 그 사이의 네트워크 topology등의 요인으로
 \textbf{측정하는 순간의 서버 클러스터의 네트워크 환경에 따라 약간의 편차가 있을 수 있다.}
 하지만 대부분의 경우 9000 input(s)/sec 이상의 성능을 얻을 수 있었으며,
-반복을 통해 얻은 최고 성능은 9345.39 input(s)/sec이었다.
+반복을 통해 얻은 최고 성능은 9399.12 input(s)/sec이었다.
 \textbf{최종 성능 채점시에 이와 같은 점이 충분히 고려되어야 한다.}
 
 \subsection{Latency Breakdown}
@@ -107,5 +107,5 @@ latency를 세부적으로 분석하였다. 단위는 초(sec)이다.
     \item No more Tensor type: 6175.81 input(s)/sec
     \item Scatter into Scatterv: 5924.65 input(s)/sec
     \item Networking \& offloading interleaved: 8587.53 input(s)/sec
-    \item Fine-grained interleaving: \textbf{9345.39 input(s)/sec}
+    \item Fine-grained interleaving: \textbf{9399.12 input(s)/sec}
 \end{enumerate}

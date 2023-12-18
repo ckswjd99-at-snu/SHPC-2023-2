@@ -28,41 +28,43 @@
 
 ## Latency Breakdown
 
-### Total Latency (OUTDATED)
+### Total Latency
+
+Lower bound due to MPI & memory BW: 0.352305 sec
 
 Measured in debug mode, in seconds.
 
-- Elapsed time: **0.470877 sec**
-- Throughput: **15872.022336 input(s)/sec**
+- Elapsed time: **0.380468 sec**
+- Throughput: **18533.932501 input(s)/sec**
 
 | NODE              | 00(root) | 01       | 02       | 03       |
 |:------------------|:--------:|:--------:|:--------:|:--------:|
 | start_classifier  | 0.000000 | 0.000000 | 0.000000 | 0.000000 |
-| init_mem          | 0.000000 | 0.000018 | 0.000015 | 0.000016 |
-| init_ce           | 0.000185 | 0.000033 | 0.000028 | 0.000032 |
-| scatter_start     | 0.000214 | 0.000215 | 0.000217 | 0.000199 |
-| ce_start_gpu0     | 0.000230 | 0.003859 | 0.004119 | 0.003699 |
-| ce_start_gpu1     | 0.000272 | 0.005872 | 0.006409 | 0.005907 |
-| ce_start_gpu2     | 0.000327 | 0.007848 | 0.008521 | 0.008114 |
-| ce_start_gpu3     | 0.000253 | 0.009846 | 0.010636 | 0.010267 |
-| scatter_end       | 0.083404 | 0.256125 | 0.256918 | 0.256689 |
-| ce_end            | 0.466457 | 0.408161 | 0.409743 | 0.410429 |
-| gather_end        | 0.466902 | 0.408245 | 0.411207 | 0.410585 |
-| finish_classifier | 0.466915 | 0.408253 | 0.411217 | 0.410593 |
+| init_mem          | 0.000000 | 0.000019 | 0.000033 | 0.000017 |
+| init_ce           | 0.000206 | 0.000033 | 0.000068 | 0.000031 |
+| scatter_start     | 0.000223 | 0.000217 | 0.000430 | 0.000224 |
+| ce_start_gpu0     | 0.000260 | 0.009836 | 0.011851 | 0.012522 |
+| ce_start_gpu1     | 0.000262 | 0.017100 | 0.019726 | 0.020753 |
+| ce_start_gpu2     | 0.000305 | 0.024429 | 0.027037 | 0.028597 |
+| ce_start_gpu3     | 0.000379 | 0.031801 | 0.034346 | 0.036484 |
+| scatter_end       | 0.080509 | 0.251276 | 0.255178 | 0.279429 |
+| ce_end            | 0.402353 | 0.382517 | 0.380537 | 0.379149 |
+| gather_end        | 0.402579 | 0.382625 | 0.380742 | 0.379365 |
+| finish_classifier | 0.402588 | 0.382635 | 0.380756 | 0.379378 |
 
 
 ### Computation Latency
 
-- Total latency: 0.410397 sec
-- `conv1d_k3_cuda`: 0.053010 (12.57 %)
-- `conv1d_k7_cuda`: 0.114008 (27.04 %)
-- `linear_naive_cuda`: 0.004016 (0.95 %)
-- `linear_reg_cuda`: 0.038694 (09.17 %)
-- `layernorm_1008_cuda`: 0.059144 (14.02 %)
-- `layernorm_102_cuda`: -0.007161 (-1.69 %)
-- `maxpool1d_k3_cuda`: 0.005528 (1.31 %)
-- `argmax_f4_cuda`: -0.022122 (-5.24 %)
-- etc: 0.176494 sec (41.86 %)
+- **Total latency**: 0.380468 sec
+    - `conv1d_k3_cuda`: 0.028444 (7.48%)
+    - `conv1d_k7_cuda`: 0.080676 (21.20%)
+    - `linear_naive_cuda`: 0.000000 (0.00%)
+    - `linear_reg_cuda`: 0.030356 (7.98%)
+    - `layernorm_1008_cuda`: 0.041958 (11.03%)
+    - `layernorm_102_cuda`: 0.014251 (3.75%)
+    - `maxpool1d_k3_cuda`: 0.008116 (2.13%)
+    - `argmax_f4_cuda`: 0.000000 (0.00%)
+    - etc: 0.192874 (50.69%)
 
 
 ## Optimization History
@@ -90,8 +92,10 @@ Measured in debug mode, in seconds.
 - Networking & offloading interleaved: 8587.53 input(s)/sec
 - Fine-grained interleaving: 9303.47 input(s)/sec
 - Asynchronous MPI: 13077.40 input(s)/sec
-- Fine-grained `layernorm_cuda`: 15872.02 input(s)/sec
-- Split gpu stream into mem and compute: **16359.99** input(s)/sec
+- Fine-grained layernorm_cuda: 15872.02 input(s)/sec
+- Split gpu stream into mem and compute: 16359.99 input(s)/sec
+- Avoid bank conflict + miscellaneous skills: 17077.22 input(s)/sec
+- layernorm_cuda vectorized mem access: **19267.45** input(s)/sec
 
 ## Model Structure
 
