@@ -26,7 +26,7 @@
     - [ ] `conv1d_relu_conv1d_relu_conv1d_relu_conv1d_stat` (Conv block 3 - Conv lbock 6(front))
     - [ ] `linear_relu_linear` (FC block 2 - FC block 3)
 
-## Latency Breakdown
+## Latency Breakdown (OUTDATED)
 
 ### Total Latency
 
@@ -95,7 +95,8 @@ Measured in debug mode, in seconds.
 - Fine-grained layernorm_cuda: 15872.02 input(s)/sec
 - Split gpu stream into mem and compute: 16359.99 input(s)/sec
 - Avoid bank conflict + miscellaneous skills: 17077.22 input(s)/sec
-- layernorm_cuda vectorized mem access: **19267.45** input(s)/sec
+- layernorm_cuda vectorized mem access: 19267.45 input(s)/sec
+- H2D & D2H access interleaved properly: **22306.70** input(s)/sec
 
 ## Model Structure
 
