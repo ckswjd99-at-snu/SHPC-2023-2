@@ -33,7 +33,7 @@ static int iam_root;
 
 
 /** SECTION: DEBUGGING **/
-#define DEBUG 0
+#define DEBUG 1
 #if DEBUG == 1
 double dbg_start_time, dbg_ce_init, dbg_ce_final;
 #define DEBUG_PRINT(...) do { \
@@ -76,8 +76,11 @@ int checksum(float *buf, int N) {
 #define LIN_REG_BK 32
 
 #define LNORM_CHAN 256  // NEVER CHANGE!
-#define LNORM_CHPT 2
-#define LNORM_TPB  (LNORM_CHAN/LNORM_CHPT)  // NEVER CHANGE!
+#define LNORM_102_INPT 64
+#define LNORM_1008_INPT 512
+#define LNORM_CHPT 1
+#define LNORM_MAX_INPUT 1008
+#define LNORM_TPB (LNORM_CHAN / LNORM_CHPT)
 
 
 /** SECTION: Kernels **/
@@ -424,34 +427,34 @@ static __global__ void linear_reg_cuda(
 
 }
 
-static __global__ void layernorm_cuda(
+static __global__ void layernorm_1008_cuda(
   float *input, float *gamma, float *beta, float *output,
   int num_batch, int num_channels, int len_input
 ) {
-
-  int now_batch = blockIdx.x;
+  int now_batch_idx = blockIdx.x;
   int single_input_size = num_channels * len_input;
-  int single_output_size = num_channels * len_input;
+  
+  float *input_batch_offset = input + now_batch_idx * single_input_size;
+  float *output_batch_offset = output + now_batch_idx * single_input_size;
 
-  int thread_stride = LNORM_CHPT * len_input;
-
-  __shared__ float sum1[LNORM_TPB];
-  __shared__ float sum2[LNORM_TPB];
+  __shared__ float sum1[1008 * LNORM_CHAN / LNORM_1008_INPT];
+  __shared__ float sum2[1008 * LNORM_CHAN / LNORM_1008_INPT];
 
   float psum1 = 0.0f, psum2 = 0.0f;
-  for (int i = 0; i < thread_stride; ++i) {
-    psum1 += input[now_batch * single_input_size + threadIdx.x * thread_stride + i];
-    psum2 += input[now_batch * single_input_size + threadIdx.x * thread_stride + i]
-      * input[now_batch * single_input_size + threadIdx.x * thread_stride + i];
+  for (int i = 0; i < LNORM_1008_INPT; ++i) {
+    psum1 += input_batch_offset[threadIdx.x * LNORM_1008_INPT + i];
+    psum2 += input_batch_offset[threadIdx.x * LNORM_1008_INPT + i]
+      * input_batch_offset[threadIdx.x * LNORM_1008_INPT + i];
   }
-
-  __syncthreads();
 
   sum1[threadIdx.x] = psum1;
   sum2[threadIdx.x] = psum2;
-  
-  if (threadIdx.x == 0) {
-    for (int i = 1; i < LNORM_TPB; i++) {
+
+
+  __syncthreads();
+
+  if (threadIdx.x ==0) {
+    for (int i = 1; i < 1008 * LNORM_CHAN / LNORM_1008_INPT; i++) {
       sum1[0] += sum1[i];
       sum2[0] += sum2[i];
     }
@@ -464,12 +467,66 @@ static __global__ void layernorm_cuda(
 
   float var = mean2 - mean1 * mean1;
 
-  for (int i = 0; i < thread_stride; ++i) {
-    output[now_batch * single_output_size + threadIdx.x * thread_stride + i]
-    = (input[now_batch * single_input_size + threadIdx.x * thread_stride + i] - mean1)
-    / sqrtf(var + 1e-5) * gamma[threadIdx.x * thread_stride + i] + beta[threadIdx.x * thread_stride + i];
+  float4 temp_input, temp_gamma, temp_beta;
+  for (int i = 0; i < LNORM_1008_INPT; i += 4) {
+    temp_input = *reinterpret_cast<float4 *>(&input_batch_offset[threadIdx.x * LNORM_1008_INPT + i]);
+    temp_gamma = *reinterpret_cast<float4 *>(&gamma[threadIdx.x * LNORM_1008_INPT + i]);
+    temp_beta = *reinterpret_cast<float4 *>(&beta[threadIdx.x * LNORM_1008_INPT + i]);
+    
+    temp_input.x = (temp_input.x - mean1) / sqrtf(var + 1e-5) * temp_gamma.x + temp_beta.x;
+    temp_input.y = (temp_input.y - mean1) / sqrtf(var + 1e-5) * temp_gamma.y + temp_beta.y;
+    temp_input.z = (temp_input.z - mean1) / sqrtf(var + 1e-5) * temp_gamma.z + temp_beta.z;
+    temp_input.w = (temp_input.w - mean1) / sqrtf(var + 1e-5) * temp_gamma.w + temp_beta.w;
+
+    *reinterpret_cast<float4 *>(&output_batch_offset[threadIdx.x * LNORM_1008_INPT + i]) = temp_input;
   }
+
+}
+
+static __global__ void layernorm_102_cuda(
+  float *input, float *gamma, float *beta, float *output,
+  int num_batch, int num_channels, int len_input
+) {
+  int now_batch = blockIdx.x;
+  int single_input_size = num_channels * len_input;
   
+  int input_offset = now_batch * single_input_size + threadIdx.x * LNORM_102_INPT;
+
+  __shared__ float sum1[102 * LNORM_CHAN / LNORM_102_INPT];
+  __shared__ float sum2[102 * LNORM_CHAN / LNORM_102_INPT];
+
+  float psum1 = 0.0f, psum2 = 0.0f;
+  for (int i = 0; i < LNORM_102_INPT; ++i) {
+    psum1 += input[input_offset + i];
+    psum2 += input[input_offset + i]
+      * input[input_offset + i];
+  }
+
+  sum1[threadIdx.x] = psum1;
+  sum2[threadIdx.x] = psum2;
+
+  __syncthreads();
+
+
+  if (threadIdx.x == 0) {
+    for (int i = 1; i < 102 * LNORM_CHAN / LNORM_102_INPT; i++) {
+      sum1[0] += sum1[i];
+      sum2[0] += sum2[i];
+    }
+  }
+
+  __syncthreads();
+
+  float mean1 = sum1[0] / (float)single_input_size;
+  float mean2 = sum2[0] / (float)single_input_size;
+
+  float var = mean2 - mean1 * mean1;
+
+  for (int i = 0; i < LNORM_102_INPT; ++i) {
+    output[input_offset + i]
+    = (input[input_offset + i] - mean1)
+    / sqrtf(var + 1e-5) * gamma[threadIdx.x * LNORM_102_INPT + i] + beta[threadIdx.x * LNORM_102_INPT + i];
+  }
 }
 
 static __global__ void maxpool1d_k3_cuda(
@@ -823,7 +880,7 @@ void ComputeEngine::inference(float *popped_input) {
         0
       );
 
-      layernorm_cuda<<<now_batch_size, LNORM_TPB, 0, _gpu_stream>>>(
+      layernorm_1008_cuda<<<now_batch_size, 1008*256/LNORM_1008_INPT, 0, _gpu_stream>>>(
         a_conv1_gpu, gamma_conv1_gpu, beta_conv1_gpu, a_layernorm1_gpu,
         now_batch_size, 256, 1008
       );
@@ -898,7 +955,7 @@ void ComputeEngine::inference(float *popped_input) {
         0
       );
 
-      layernorm_cuda<<<now_batch_size, LNORM_TPB, 0, _gpu_stream>>>(
+      layernorm_102_cuda<<<now_batch_size, 102*256/LNORM_102_INPT, 0, _gpu_stream>>>(
         a_conv6_gpu, gamma_conv6_gpu, beta_conv6_gpu, a_layernorm6_gpu,
         now_batch_size, 256, 102
       );
