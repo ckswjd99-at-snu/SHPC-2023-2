@@ -28,25 +28,39 @@
 
 ## Latency Breakdown
 
+### Total Latency
+
 Measured in debug mode, in seconds.
 
-- Elapsed time: **0.880531 sec**
-- Throughput: **9303.474877 input(s)/sec**
+- Elapsed time: **0.626424 sec**
+- Throughput: **13077.40 input(s)/sec**
 
 | NODE              | 00(root) | 01       | 02       | 03       |
 |:------------------|:--------:|:--------:|:--------:|:--------:|
 | start_classifier  | 0.000000 | 0.000000 | 0.000000 | 0.000000 |
-| init_mem          | 0.000000 | 0.000016 | 0.000029 | 0.000013 |
-| init_ce           | 0.000183 | 0.000032 | 0.000065 | 0.000026 |
-| scatter_start     | 0.000206 | 0.000215 | 0.000296 | 0.000199 |
-| ce_start_gpu0     | 0.000225 | 0.005239 | 0.009069 | 0.013125 |
-| ce_start_gpu1     | 0.000331 | 0.017486 | 0.021290 | 0.025264 |
-| ce_start_gpu2     | 0.000374 | 0.029747 | 0.033609 | 0.037557 |
-| ce_start_gpu3     | 0.000270 | 0.041901 | 0.045766 | 0.049682 |
-| scatter_end       | 0.810448 | 0.802368 | 0.806489 | 0.810455 |
-| ce_end            | 0.810464 | 0.826805 | 0.831194 | 0.835908 |
-| gather_end        | 0.836118 | 0.826890 | 0.836094 | 0.836072 |
-| finish_classifier | 0.836125 | 0.826905 | 0.836106 | 0.836081 |
+| init_mem          | 0.000000 | 0.000017 | 0.000016 | 0.000016 |
+| init_ce           | 0.000192 | 0.000032 | 0.000029 | 0.000030 |
+| scatter_start     | 0.000220 | 0.000205 | 0.000213 | 0.000180 |
+| ce_start_gpu0     | 0.000234 | 0.003726 | 0.004129 | 0.003671 |
+| ce_start_gpu1     | 0.000291 | 0.005716 | 0.006305 | 0.005912 |
+| ce_start_gpu2     | 0.000341 | 0.007729 | 0.008559 | 0.008172 |
+| ce_start_gpu3     | 0.000380 | 0.009712 | 0.010844 | 0.010409 |
+| scatter_end       | 0.071253 | 0.266908 | 0.267732 | 0.267996 |
+| ce_end            | 0.586616 | 0.548810 | 0.549895 | 0.550898 |
+| gather_end        | 0.587108 | 0.548915 | 0.551691 | 0.551084 |
+| finish_classifier | 0.587122 | 0.548927 | 0.551707 | 0.551094 |
+
+### Computation Latency
+
+- Total latency: 0.547885 sec
+- `conv1d_k3_cuda`: 0.048375 sec
+- `conv1d_k7_cuda`: 0.127047 sec
+- `linear_naive_cuda`: 0.002537 sec
+- `linear_reg_cuda`: 0.038720 sec
+- `layernorm_cuda`: 0.059536 sec
+- `maxpool1d_k3_cuda`: 0.003434 sec
+- `argmax_f4_inplace_cuda`: 0.000000 sec
+
 
 
 ## Optimization History
@@ -72,7 +86,8 @@ Measured in debug mode, in seconds.
 - No more Tensor type: **6175.81** input(s)/sec
 - Scatter into Scatterv: **5924.65** input(s)/sec
 - Networking & offloading interleaved: **8587.53** input(s)/sec
-- Fine-grained interleaving: **9345.39** input(s)/sec
+- Fine-grained interleaving: **9303.47** input(s)/sec
+- Asynchronous MPI: **13077.40** input(s)/sec
 
 ## Model Structure
 
