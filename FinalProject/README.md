@@ -1,5 +1,11 @@
 # Optimizing CNN Model with CUDA
 
+## Best score
+
+The best score through repeatition was 23327.75 input(s)/sec.
+
+![](./best_score.png)
+
 ## Applied Optimization Methods
 
 - [x] Synchronously offload input to other nodes using MPI
